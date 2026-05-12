@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import json
 import unicodedata
 from pathlib import Path
 from typing import Iterable, Optional
@@ -21,9 +22,106 @@ if "logged_in" not in st.session_state or st.session_state.logged_in is not True
     st.warning("Bu sayfaya erişmek için önce ana sayfadan giriş yapmalısın.")
     st.stop()
 
-st.title("🤖 SMARTEK360: Yapay Zeka Analiz Paneli")
-st.caption(
-    "Shopify, Trendyol, Hepsiburada ve Kreatif Takibi verilerini okuyarak net ciro, sipariş, kâr, ROAS, CAC, stok, tahmin ve aksiyon yorumları üretir."
+# =========================================================
+# THEME / UI
+# =========================================================
+st.markdown(
+    """
+    <style>
+        .stApp {
+            background:
+                radial-gradient(circle at 50% 8%, rgba(218, 165, 32, 0.16), transparent 30%),
+                linear-gradient(135deg, #050505 0%, #111111 48%, #050505 100%);
+        }
+
+        header { visibility: hidden; }
+        #MainMenu { visibility: hidden; }
+        footer { visibility: hidden; }
+
+        .block-container {
+            padding-top: 2rem;
+            padding-bottom: 2rem;
+            max-width: 1450px;
+        }
+
+        .ai-hero {
+            background: rgba(8, 8, 8, 0.78);
+            border: 1px solid rgba(212, 175, 55, 0.35);
+            box-shadow: 0 24px 85px rgba(0,0,0,0.50);
+            border-radius: 30px;
+            padding: 28px 34px;
+            backdrop-filter: blur(16px);
+            margin-bottom: 22px;
+        }
+
+        .ai-title {
+            color: #ffffff;
+            font-size: 42px;
+            font-weight: 850;
+            letter-spacing: 0.4px;
+            margin-bottom: 6px;
+        }
+
+        .ai-subtitle {
+            color: rgba(255,255,255,0.72);
+            font-size: 16px;
+            line-height: 1.5;
+        }
+
+        .gold-line {
+            width: 150px;
+            height: 3px;
+            background: linear-gradient(90deg, transparent, #d4af37, transparent);
+            margin-top: 18px;
+            border-radius: 99px;
+        }
+
+        .assistant-box {
+            background: rgba(255,255,255,0.055);
+            border: 1px solid rgba(212,175,55,0.22);
+            border-radius: 24px;
+            padding: 20px;
+            margin-top: 10px;
+            margin-bottom: 18px;
+        }
+
+        div.stButton > button {
+            border-radius: 14px;
+            border: 1px solid rgba(212,175,55,0.55);
+            background: linear-gradient(135deg, #d4af37, #9d7417);
+            color: #111111;
+            font-weight: 800;
+        }
+
+        div.stButton > button:hover {
+            border-color: #ffffff;
+            color: #000000;
+            box-shadow: 0 0 22px rgba(212,175,55,0.35);
+        }
+
+        [data-testid="stMetric"] {
+            background: rgba(255,255,255,0.055);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 18px;
+            padding: 14px;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+    <div class="ai-hero">
+        <div class="ai-title">🤖 SMARTEK360: Yapay Zeka Analiz Paneli</div>
+        <div class="ai-subtitle">
+            Shopify, Trendyol, Hepsiburada ve Kreatif Takibi verilerini okuyarak net ciro, sipariş, kâr, ROAS, CAC, stok,
+            tahmin ve aksiyon yorumları üretir. Ayrıca ChatGPT / Gemini tarzı canlı soru-cevap asistanı içerir.
+        </div>
+        <div class="gold-line"></div>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
 
@@ -920,6 +1018,208 @@ else:
     creative_summary = pd.DataFrame(columns=["campaign_name", "creative_name", "spend", "reach", "impressions", "results", "purchases", "attributed_revenue", "ctr", "cpc", "cpm", "frequency", "roas", "cac"])
 
 
+
+# =========================================================
+# LIVE AI CHAT HELPERS
+# =========================================================
+def get_secret_value(key: str) -> str:
+    try:
+        return str(st.secrets.get(key, "")).strip()
+    except Exception:
+        return ""
+
+
+def compact_table(df: pd.DataFrame, max_rows: int = 12) -> str:
+    if df is None or df.empty:
+        return "Veri yok."
+    view = df.head(max_rows).copy()
+    return view.to_markdown(index=False)
+
+
+def build_report_context(
+    platform_summary_df: pd.DataFrame,
+    product_summary_df: pd.DataFrame,
+    creative_summary_df: pd.DataFrame,
+) -> str:
+    top_products = product_summary_df.sort_values(["qty", "revenue"], ascending=False).head(10) if not product_summary_df.empty else pd.DataFrame()
+    top_creatives = creative_summary_df.sort_values(["roas", "purchases"], ascending=False).head(10) if not creative_summary_df.empty else pd.DataFrame()
+    weak_creatives = creative_summary_df.sort_values(["spend", "roas"], ascending=[False, True]).head(10) if not creative_summary_df.empty else pd.DataFrame()
+
+    context = f"""
+RAPOR DÖNEMİ: {period_label}
+
+GENEL KPI'LAR:
+- Net Ciro: {money(total_revenue)}
+- Sipariş Adedi: {order_count:,}
+- Hedef Gerçekleşme: {pct(target_rate)}
+- Anlık Net Kar: {money(net_profit_now)}
+- Brüt Kar: {money(gross_profit)}
+- Reklam Harcaması: {money(ad_spend)}
+- Reklam Geliri: {money(ad_revenue)}
+- ROAS: {overall_roas:.2f}
+- CAC: {money(cac)}
+- AOV: {money(aov)}
+- LTV Tahmini: {money(ltv)}
+
+KANAL ÖZETİ:
+{compact_table(platform_summary_df, 10)}
+
+TOP-SELLER ÜRÜNLER:
+{compact_table(top_products[["platform", "product_name", "revenue", "qty", "gross_profit", "stock_units"]] if not top_products.empty else top_products, 10)}
+
+EN GÜÇLÜ KREATİFLER:
+{compact_table(top_creatives[["campaign_name", "creative_name", "spend", "purchases", "attributed_revenue", "roas", "cac", "ctr"]] if not top_creatives.empty else top_creatives, 10)}
+
+KONTROL EDİLECEK KREATİFLER:
+{compact_table(weak_creatives[["campaign_name", "creative_name", "spend", "purchases", "attributed_revenue", "roas", "cac", "ctr"]] if not weak_creatives.empty else weak_creatives, 10)}
+
+KULLANICININ MANUEL VARSAYIMLARI:
+- Aylık Ciro Hedefi: {money(monthly_revenue_target)}
+- 30 Günlük Sabit Gider: {money(fixed_costs_30d)}
+- Mevcut Nakit: {money(current_cash)}
+- Planlanan Stok Alımı: {money(planned_stock_purchase)}
+- Yeni Müşteri: {new_customer_count:,}
+- Geri Gelen Müşteri: {returning_customer_count:,}
+- Stok Tedarik Süresi: {stock_lead_days} gün
+"""
+    return context
+
+
+def rule_based_chat_answer(user_question: str, context: str) -> str:
+    q = normalize_text(user_question)
+
+    if any(k in q for k in ["roas", "kampanya", "reklam"]):
+        if overall_roas >= 3:
+            yorum = "Genel ROAS güçlü. Kazanan kampanya ve kreatiflerde bütçeyi kademeli artırabilirsin."
+        elif overall_roas >= 1.5:
+            yorum = "Genel ROAS orta seviyede. Düşük ROAS kreatifleri ayıklamadan bütçe artırmak riskli olur."
+        else:
+            yorum = "Genel ROAS düşük. Önce kreatif, hedefleme ve ürün sayfası uyumu kontrol edilmeli."
+        return f"{yorum}\n\nMevcut ROAS: **{overall_roas:.2f}**, reklam harcaması: **{money(ad_spend)}**, reklam geliri: **{money(ad_revenue)}**."
+
+    if any(k in q for k in ["stok", "besleme", "urun", "top seller", "top-seller"]):
+        if product_summary.empty:
+            return "Ürün/stok yorumu için yeterli ürün verisi bulunamadı."
+        top = product_summary.sort_values(["qty", "revenue"], ascending=False).head(5)
+        return "Stok ve ürün tarafında ilk odak top-seller ürünler olmalı:\n\n" + compact_table(
+            top[["platform", "product_name", "qty", "revenue", "stock_units"]], 5
+        )
+
+    if any(k in q for k in ["kar", "karlilik", "net kar", "ciro"]):
+        return (
+            f"Net ciro **{money(total_revenue)}**, tahmini brüt kâr **{money(gross_profit)}**, "
+            f"reklam harcaması **{money(ad_spend)}**, sabit gider varsayımı **{money(fixed_costs_30d)}**. "
+            f"Bu varsayımla anlık net kâr **{money(net_profit_now)}**."
+        )
+
+    if any(k in q for k in ["kreatif", "creative", "ctr", "cpc", "cpm"]):
+        if creative_summary.empty:
+            return "Kreatif yorumu için Kreatif_Takip klasöründe okunabilir kreatif raporu bulunamadı."
+        best = creative_summary.sort_values(["roas", "purchases"], ascending=False).head(5)
+        weak = creative_summary.sort_values(["spend", "roas"], ascending=[False, True]).head(5)
+        return (
+            "En güçlü kreatif adayları:\n\n"
+            + compact_table(best[["campaign_name", "creative_name", "spend", "purchases", "roas", "cac", "ctr"]], 5)
+            + "\n\nKontrol edilecek kreatifler:\n\n"
+            + compact_table(weak[["campaign_name", "creative_name", "spend", "purchases", "roas", "cac", "ctr"]], 5)
+        )
+
+    if any(k in q for k in ["nakit", "cash", "projeksiyon"]):
+        days = max((max_date - min_date).days + 1, 1)
+        projected_gross_profit = safe_divide(gross_profit, days) * 30
+        projected_ad_spend = safe_divide(ad_spend, days) * 30
+        projected_cash = current_cash + projected_gross_profit - projected_ad_spend - fixed_costs_30d - planned_stock_purchase
+        return (
+            f"30 günlük basit nakit projeksiyonu: **{money(projected_cash)}**.\n\n"
+            f"Hesap: mevcut nakit {money(current_cash)} + tahmini brüt kâr {money(projected_gross_profit)} "
+            f"- tahmini reklam harcaması {money(projected_ad_spend)} - sabit gider {money(fixed_costs_30d)} "
+            f"- planlanan stok alımı {money(planned_stock_purchase)}."
+        )
+
+    return (
+        "Raporlara göre genel özet:\n\n"
+        + create_general_note()
+        + "\n\nDaha net cevap için sorunuzu örneğin 'hangi kreatifi durdurmalıyım?', 'stokta ne almalıyım?', 'ROAS neden düşük?' gibi sorabilirsiniz."
+    )
+
+
+def call_openai_assistant(user_question: str, context: str, model_name: str) -> str:
+    api_key = get_secret_value("OPENAI_API_KEY")
+    if not api_key:
+        return "OpenAI API anahtarı bulunamadı. Streamlit Secrets içine OPENAI_API_KEY eklenirse bu mod çalışır."
+
+    try:
+        from openai import OpenAI
+    except Exception as exc:
+        return f"OpenAI paketi kurulu değil. requirements.txt içine `openai` ekle. Teknik hata: {exc}"
+
+    client = OpenAI(api_key=api_key)
+    prompt = f"""
+Sen IQIBLA Türkiye için çalışan veri analizi asistanısın.
+Aşağıdaki rapor verilerine göre cevap ver.
+Cevabın Türkçe, net, yöneticiye uygun ve aksiyon odaklı olsun.
+Bilmediğin veya veri olmayan yerde tahmin uydurma; 'veri eksik' de.
+
+{context}
+
+KULLANICI SORUSU:
+{user_question}
+"""
+    try:
+        response = client.responses.create(
+            model=model_name,
+            input=prompt,
+        )
+        return response.output_text
+    except Exception as exc:
+        return f"OpenAI yanıtı alınamadı: {exc}"
+
+
+def call_gemini_assistant(user_question: str, context: str, model_name: str) -> str:
+    api_key = get_secret_value("GEMINI_API_KEY")
+    if not api_key:
+        return "Gemini API anahtarı bulunamadı. Streamlit Secrets içine GEMINI_API_KEY eklenirse bu mod çalışır."
+
+    try:
+        from google import genai
+    except Exception as exc:
+        return f"Google GenAI paketi kurulu değil. requirements.txt içine `google-genai` ekle. Teknik hata: {exc}"
+
+    prompt = f"""
+Sen IQIBLA Türkiye için çalışan veri analizi asistanısın.
+Aşağıdaki rapor verilerine göre cevap ver.
+Cevabın Türkçe, net, yöneticiye uygun ve aksiyon odaklı olsun.
+Bilmediğin veya veri olmayan yerde tahmin uydurma; 'veri eksik' de.
+
+{context}
+
+KULLANICI SORUSU:
+{user_question}
+"""
+    try:
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+        )
+        return response.text
+    except Exception as exc:
+        return f"Gemini yanıtı alınamadı: {exc}"
+
+
+def answer_with_selected_ai(provider: str, user_question: str, context: str, openai_model: str, gemini_model: str) -> str:
+    if provider == "OpenAI / ChatGPT":
+        return call_openai_assistant(user_question, context, openai_model)
+    if provider == "Gemini":
+        return call_gemini_assistant(user_question, context, gemini_model)
+    if provider == "Karşılaştırmalı: OpenAI + Gemini":
+        openai_answer = call_openai_assistant(user_question, context, openai_model)
+        gemini_answer = call_gemini_assistant(user_question, context, gemini_model)
+        return f"## OpenAI / ChatGPT Yorumu\n\n{openai_answer}\n\n---\n\n## Gemini Yorumu\n\n{gemini_answer}"
+    return rule_based_chat_answer(user_question, context)
+
+
+
 # =========================================================
 # AI TEXT GENERATORS
 # =========================================================
@@ -989,6 +1289,78 @@ k7.metric("Reklam Harcaması", money(ad_spend))
 k8.metric("CAC", money(cac))
 k9.metric("LTV Tahmini", money(ltv))
 k10.metric("30 Gün Tahmini Ciro", money((total_revenue / max((max_date - min_date).days + 1, 1)) * 30 if total_revenue else 0.0))
+
+
+# =========================================================
+# LIVE AI CHAT
+# =========================================================
+st.markdown(
+    """
+    <div class="assistant-box">
+        <h3 style="color:white; margin-bottom: 6px;">💬 Canlı Yapay Zeka Asistanı</h3>
+        <p style="color: rgba(255,255,255,0.70); margin-bottom: 0;">
+            Burada ChatGPT / Gemini tarzı soru sorabilirsin. Asistan, mevcut Shopify, Trendyol, Hepsiburada ve Kreatif rapor özetlerine göre cevap üretir.
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+chat_col1, chat_col2, chat_col3 = st.columns([1.4, 1.2, 1.2])
+with chat_col1:
+    ai_provider = st.selectbox(
+        "AI Motoru",
+        ["Yerel Kural Bazlı", "OpenAI / ChatGPT", "Gemini", "Karşılaştırmalı: OpenAI + Gemini"],
+        index=0,
+        help="API anahtarı yoksa Yerel Kural Bazlı mod çalışır. OpenAI/Gemini için Streamlit Secrets gerekir.",
+    )
+with chat_col2:
+    openai_model = st.text_input("OpenAI model", value="gpt-5.5")
+with chat_col3:
+    gemini_model = st.text_input("Gemini model", value="gemini-2.5-flash")
+
+report_context = build_report_context(platform_summary, product_summary, creative_summary)
+
+quick_questions = [
+    "Genel yönetici özeti çıkar.",
+    "Hangi kreatifleri ölçeklemeliyim, hangilerini durdurmalıyım?",
+    "ROAS düşükse en olası sebep nedir?",
+    "Stokta neyi beslemeliyim?",
+    "Hangi kanal daha kârlı?",
+    "30 günlük satış ve nakit riskini yorumla.",
+]
+
+selected_quick_question = st.selectbox("Hazır soru seç", [""] + quick_questions)
+
+if "ai_chat_history" not in st.session_state:
+    st.session_state.ai_chat_history = []
+
+if selected_quick_question and st.button("Hazır soruyu sor"):
+    st.session_state.ai_chat_history.append({"role": "user", "content": selected_quick_question})
+    with st.spinner("Yapay zeka raporları yorumluyor..."):
+        answer = answer_with_selected_ai(ai_provider, selected_quick_question, report_context, openai_model, gemini_model)
+    st.session_state.ai_chat_history.append({"role": "assistant", "content": answer})
+    st.rerun()
+
+for msg in st.session_state.ai_chat_history[-8:]:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+user_prompt = st.chat_input("Raporlara göre soru sor: örn. 'Hangi kreatifi kapatmalıyım?'")
+if user_prompt:
+    st.session_state.ai_chat_history.append({"role": "user", "content": user_prompt})
+    with st.chat_message("user"):
+        st.markdown(user_prompt)
+    with st.spinner("Yapay zeka raporları yorumluyor..."):
+        answer = answer_with_selected_ai(ai_provider, user_prompt, report_context, openai_model, gemini_model)
+    st.session_state.ai_chat_history.append({"role": "assistant", "content": answer})
+    with st.chat_message("assistant"):
+        st.markdown(answer)
+
+with st.expander("AI'ın kullandığı rapor özetini göster"):
+    st.code(report_context)
+
+st.divider()
 
 
 # =========================================================
