@@ -1,0 +1,11 @@
+# IQIBLA Türkiye Panel
+
+Streamlit Cloud deploy ayarları:
+
+- Repository: GitHub repo linkiniz
+- Branch: main
+- Main file path: ana_sayfa.py
+- App URL: isteğe bağlı
+
+Ana dosya: ana_sayfa.py
+Toplu rapor sayfası: pages/IQIBLA_Stratejik_Rapor.py
