@@ -116,7 +116,7 @@ st.markdown(
         <div class="ai-title">🤖 SMARTEK360: Yapay Zeka Analiz Paneli</div>
         <div class="ai-subtitle">
             Shopify, Trendyol, Hepsiburada ve Kreatif Takibi verilerini okuyarak net ciro, sipariş, kâr, ROAS, CAC, stok,
-            tahmin ve aksiyon yorumları üretir. Ayrıca ChatGPT / Gemini tarzı canlı soru-cevap asistanı içerir.
+            tahmin ve aksiyon yorumları üretir. Ayrıca Gemini tarzı canlı soru-cevap asistanı içerir.
         </div>
         <div class="gold-line"></div>
     </div>
@@ -1143,38 +1143,6 @@ def rule_based_chat_answer(user_question: str, context: str) -> str:
     )
 
 
-def call_openai_assistant(user_question: str, context: str, model_name: str) -> str:
-    api_key = get_secret_value("OPENAI_API_KEY")
-    if not api_key:
-        return "OpenAI API anahtarı bulunamadı. Streamlit Secrets içine OPENAI_API_KEY eklenirse bu mod çalışır."
-
-    try:
-        from openai import OpenAI
-    except Exception as exc:
-        return f"OpenAI paketi kurulu değil. requirements.txt içine `openai` ekle. Teknik hata: {exc}"
-
-    client = OpenAI(api_key=api_key)
-    prompt = f"""
-Sen IQIBLA Türkiye için çalışan veri analizi asistanısın.
-Aşağıdaki rapor verilerine göre cevap ver.
-Cevabın Türkçe, net, yöneticiye uygun ve aksiyon odaklı olsun.
-Bilmediğin veya veri olmayan yerde tahmin uydurma; 'veri eksik' de.
-
-{context}
-
-KULLANICI SORUSU:
-{user_question}
-"""
-    try:
-        response = client.responses.create(
-            model=model_name,
-            input=prompt,
-        )
-        return response.output_text
-    except Exception as exc:
-        return f"OpenAI yanıtı alınamadı: {exc}"
-
-
 def call_gemini_assistant(user_question: str, context: str, model_name: str) -> str:
     api_key = get_secret_value("GEMINI_API_KEY")
     if not api_key:
@@ -1207,15 +1175,9 @@ KULLANICI SORUSU:
         return f"Gemini yanıtı alınamadı: {exc}"
 
 
-def answer_with_selected_ai(provider: str, user_question: str, context: str, openai_model: str, gemini_model: str) -> str:
-    if provider == "OpenAI / ChatGPT":
-        return call_openai_assistant(user_question, context, openai_model)
+def answer_with_selected_ai(provider: str, user_question: str, context: str, gemini_model: str) -> str:
     if provider == "Gemini":
         return call_gemini_assistant(user_question, context, gemini_model)
-    if provider == "Karşılaştırmalı: OpenAI + Gemini":
-        openai_answer = call_openai_assistant(user_question, context, openai_model)
-        gemini_answer = call_gemini_assistant(user_question, context, gemini_model)
-        return f"## OpenAI / ChatGPT Yorumu\n\n{openai_answer}\n\n---\n\n## Gemini Yorumu\n\n{gemini_answer}"
     return rule_based_chat_answer(user_question, context)
 
 
@@ -1299,24 +1261,22 @@ st.markdown(
     <div class="assistant-box">
         <h3 style="color:white; margin-bottom: 6px;">💬 Canlı Yapay Zeka Asistanı</h3>
         <p style="color: rgba(255,255,255,0.70); margin-bottom: 0;">
-            Burada ChatGPT / Gemini tarzı soru sorabilirsin. Asistan, mevcut Shopify, Trendyol, Hepsiburada ve Kreatif rapor özetlerine göre cevap üretir.
+            Burada Gemini tarzı soru sorabilirsin. Asistan, mevcut Shopify, Trendyol, Hepsiburada ve Kreatif rapor özetlerine göre cevap üretir.
         </p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-chat_col1, chat_col2, chat_col3 = st.columns([1.4, 1.2, 1.2])
+chat_col1, chat_col2 = st.columns([1.4, 1.2])
 with chat_col1:
     ai_provider = st.selectbox(
         "AI Motoru",
-        ["Yerel Kural Bazlı", "OpenAI / ChatGPT", "Gemini", "Karşılaştırmalı: OpenAI + Gemini"],
-        index=0,
-        help="API anahtarı yoksa Yerel Kural Bazlı mod çalışır. OpenAI/Gemini için Streamlit Secrets gerekir.",
+        ["Yerel Kural Bazlı", "Gemini"],
+        index=1,
+        help="Gemini için Streamlit Secrets içine GEMINI_API_KEY eklenmeli. API anahtarı yoksa Yerel Kural Bazlı modu seçebilirsin.",
     )
 with chat_col2:
-    openai_model = st.text_input("OpenAI model", value="gpt-5.5")
-with chat_col3:
     gemini_model = st.text_input("Gemini model", value="gemini-2.5-flash")
 
 report_context = build_report_context(platform_summary, product_summary, creative_summary)
@@ -1338,7 +1298,7 @@ if "ai_chat_history" not in st.session_state:
 if selected_quick_question and st.button("Hazır soruyu sor"):
     st.session_state.ai_chat_history.append({"role": "user", "content": selected_quick_question})
     with st.spinner("Yapay zeka raporları yorumluyor..."):
-        answer = answer_with_selected_ai(ai_provider, selected_quick_question, report_context, openai_model, gemini_model)
+        answer = answer_with_selected_ai(ai_provider, selected_quick_question, report_context, gemini_model)
     st.session_state.ai_chat_history.append({"role": "assistant", "content": answer})
     st.rerun()
 
@@ -1352,7 +1312,7 @@ if user_prompt:
     with st.chat_message("user"):
         st.markdown(user_prompt)
     with st.spinner("Yapay zeka raporları yorumluyor..."):
-        answer = answer_with_selected_ai(ai_provider, user_prompt, report_context, openai_model, gemini_model)
+        answer = answer_with_selected_ai(ai_provider, user_prompt, report_context, gemini_model)
     st.session_state.ai_chat_history.append({"role": "assistant", "content": answer})
     with st.chat_message("assistant"):
         st.markdown(answer)
@@ -1765,6 +1725,6 @@ with tab5:
     st.markdown(
         """
         **Not:** Bu panel ilk sürümde kural bazlı yapay zeka mantığıyla çalışır. Yani API gerektirmez.  
-        Daha sonra istersen OpenAI API ekleyerek bu yorumları gerçek LLM çıktısına çevirebiliriz.
+        Gemini API anahtarı eklendiğinde canlı AI soru-cevap modu aktif çalışır.
         """
     )
