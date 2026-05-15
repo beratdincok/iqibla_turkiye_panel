@@ -327,6 +327,97 @@ def compact_table(df: pd.DataFrame, max_rows: int = 10) -> str:
 
 
 # =========================================================
+# PANEL SUMMARY STANDARD
+# =========================================================
+# Her panel aynı formatta panel_summary.csv üretirse,
+# Yapay Zeka paneli ham dosya okumak yerine önce bu özetleri kullanır.
+#
+# Beklenen dosya:
+# pages/Shopify_app/panel_summary.csv
+# pages/smartek_app/panel_summary.csv
+# pages/Hepsiburada_app/panel_summary.csv
+# pages/Kreatif_Takip/panel_summary.csv
+#
+# Format:
+# metric,value
+# total_revenue,123456.78
+# order_count,100
+# gross_profit_before_ads,50000
+# total_ad_spend,12000
+# total_ad_revenue,45000
+# roas,3.75
+
+def load_panel_summary(folder: Path, platform_name: str) -> tuple[pd.DataFrame, dict]:
+    summary_path = folder / "panel_summary.csv"
+    info = {
+        "platform": platform_name,
+        "path": str(summary_path),
+        "exists": summary_path.exists(),
+        "status": "NOT_FOUND",
+        "metrics": 0,
+        "notes": "",
+    }
+
+    if not summary_path.exists():
+        return pd.DataFrame(columns=["metric", "value", "platform"]), info
+
+    df, enc, sep = read_table_flexible(summary_path)
+    if df.empty:
+        info["status"] = "ERROR"
+        info["notes"] = "panel_summary.csv okunamadı."
+        return pd.DataFrame(columns=["metric", "value", "platform"]), info
+
+    metric_col = find_col(df, ["metric", "metrik", "kpi", "name", "baslik", "başlık"])
+    value_col = find_col(df, ["value", "deger", "değer", "amount", "tutar"])
+
+    if not metric_col or not value_col:
+        # Alternatif: kolon adları metric gibi, ilk satır value gibi olabilir.
+        rows = []
+        for col in df.columns:
+            if len(df) > 0:
+                rows.append({"metric": normalize_text(col), "value": df[col].iloc[0], "platform": platform_name})
+        out = pd.DataFrame(rows)
+    else:
+        out = pd.DataFrame({
+            "metric": df[metric_col].apply(normalize_text),
+            "value": df[value_col],
+            "platform": platform_name,
+        })
+
+    out["value_num"] = out["value"].apply(to_float)
+    out = out[out["metric"].astype(str).str.strip() != ""].copy()
+
+    info["status"] = "OK"
+    info["metrics"] = len(out)
+    info["notes"] = f"panel_summary.csv okundu. encoding={enc}, sep={sep}"
+    return out, info
+
+
+def summary_value(summary: pd.DataFrame, aliases: list[str], default: float = 0.0) -> float:
+    if summary is None or summary.empty:
+        return default
+    wanted = {normalize_text(a) for a in aliases}
+    for _, row in summary.iterrows():
+        metric = normalize_text(row.get("metric", ""))
+        if metric in wanted:
+            return to_float(row.get("value_num", row.get("value", default)))
+    # Partial match fallback
+    for _, row in summary.iterrows():
+        metric = normalize_text(row.get("metric", ""))
+        if any(w in metric for w in wanted if w):
+            return to_float(row.get("value_num", row.get("value", default)))
+    return default
+
+
+def has_summary_value(summary: pd.DataFrame, aliases: list[str]) -> bool:
+    if summary is None or summary.empty:
+        return False
+    wanted = {normalize_text(a) for a in aliases}
+    metrics = [normalize_text(m) for m in summary["metric"].tolist()]
+    return any(m in wanted or any(w in m for w in wanted if w) for m in metrics)
+
+
+# =========================================================
 # SHOPIFY LOADERS
 # =========================================================
 def is_shopify_order_file(path: Path) -> bool:
@@ -1062,6 +1153,21 @@ creative_ads_all = model["creative_ads"]
 creative_debug = model["creative_debug"]
 issues = model["issues"]
 
+# =========================================================
+# PANEL SUMMARY FILES
+# =========================================================
+shopify_summary, shopify_summary_info = load_panel_summary(SHOPIFY_DIR, "Shopify")
+trendyol_summary, trendyol_summary_info = load_panel_summary(TRENDYOL_DIR, "Trendyol")
+hepsiburada_summary, hepsiburada_summary_info = load_panel_summary(HEPSIBURADA_DIR, "Hepsiburada")
+kreatif_summary, kreatif_summary_info = load_panel_summary(KREATIF_DIR, "Kreatif/Meta")
+
+summary_info_df = pd.DataFrame([
+    shopify_summary_info,
+    trendyol_summary_info,
+    hepsiburada_summary_info,
+    kreatif_summary_info,
+])
+
 
 # =========================================================
 # SIDEBAR
@@ -1146,17 +1252,51 @@ trendyol_order_count = int(trendyol_orders["order_count"].sum()) if not trendyol
 hepsiburada_net_revenue = float(hepsiburada_orders["net_sales"].sum()) if not hepsiburada_orders.empty and "net_sales" in hepsiburada_orders.columns else 0.0
 hepsiburada_order_count = int(hepsiburada_orders["order_count"].sum()) if not hepsiburada_orders.empty and "order_count" in hepsiburada_orders.columns else 0
 
+# =========================================================
+# SUMMARY OVERRIDES
+# =========================================================
+# Aynı istatistiklerin AI'da farklı yerde toplanmaması için öncelik panel_summary.csv dosyalarıdır.
+# panel_summary yoksa ham dosyalardan hesaplanan fallback değerler kullanılır.
+
+if has_summary_value(shopify_summary, ["total_revenue", "net_ciro", "total revenue"]):
+    shopify_net_revenue = summary_value(shopify_summary, ["total_revenue", "net_ciro", "total revenue"], shopify_net_revenue)
+if has_summary_value(shopify_summary, ["order_count", "orders", "siparis_adedi"]):
+    shopify_order_count = int(summary_value(shopify_summary, ["order_count", "orders", "siparis_adedi"], shopify_order_count))
+if has_summary_value(shopify_summary, ["units_sold", "units", "adet"]):
+    shopify_units = summary_value(shopify_summary, ["units_sold", "units", "adet"], shopify_units)
+if has_summary_value(shopify_summary, ["aov", "average_order_value"]):
+    shopify_aov = summary_value(shopify_summary, ["aov", "average_order_value"], shopify_aov)
+if has_summary_value(shopify_summary, ["gross_profit_before_ads", "gross_profit", "brut_kar"]):
+    shopify_gross_profit = summary_value(shopify_summary, ["gross_profit_before_ads", "gross_profit", "brut_kar"], shopify_gross_profit)
+
+if has_summary_value(trendyol_summary, ["total_revenue", "net_ciro", "total revenue"]):
+    trendyol_net_revenue = summary_value(trendyol_summary, ["total_revenue", "net_ciro", "total revenue"], trendyol_net_revenue)
+if has_summary_value(trendyol_summary, ["order_count", "orders", "siparis_adedi"]):
+    trendyol_order_count = int(summary_value(trendyol_summary, ["order_count", "orders", "siparis_adedi"], trendyol_order_count))
+
+if has_summary_value(hepsiburada_summary, ["total_revenue", "net_ciro", "total revenue"]):
+    hepsiburada_net_revenue = summary_value(hepsiburada_summary, ["total_revenue", "net_ciro", "total revenue"], hepsiburada_net_revenue)
+if has_summary_value(hepsiburada_summary, ["order_count", "orders", "siparis_adedi"]):
+    hepsiburada_order_count = int(summary_value(hepsiburada_summary, ["order_count", "orders", "siparis_adedi"], hepsiburada_order_count))
+
 all_net_revenue = shopify_net_revenue + trendyol_net_revenue + hepsiburada_net_revenue
 all_order_count = shopify_order_count + trendyol_order_count + hepsiburada_order_count
 all_aov = safe_divide(all_net_revenue, all_order_count)
 
-# Şimdilik kâr hesabı sağlam maliyet eşleşmesi olan Shopify için net hesaplanır.
-# Trendyol/Hepsiburada maliyet entegrasyonu eklendiğinde buraya dahil edilir.
-all_gross_profit = shopify_gross_profit
+# Panel summary varsa kârı panellerin verdiği aynı değerden al.
+shopify_gross_profit = summary_value(shopify_summary, ["gross_profit_before_ads", "gross_profit", "brut_kar"], shopify_gross_profit)
+trendyol_gross_profit = summary_value(trendyol_summary, ["gross_profit_before_ads", "gross_profit", "brut_kar"], 0.0)
+hepsiburada_gross_profit = summary_value(hepsiburada_summary, ["gross_profit_before_ads", "gross_profit", "brut_kar"], 0.0)
+all_gross_profit = shopify_gross_profit + trendyol_gross_profit + hepsiburada_gross_profit
 
 ad_spend = float(creative_ads["spend"].sum()) if not creative_ads.empty else 0.0
 ad_revenue = float(creative_ads["ad_revenue"].sum()) if not creative_ads.empty else 0.0
 ad_purchases = float(creative_ads["purchases"].sum()) if not creative_ads.empty else 0.0
+
+# Kreatif/Meta panel summary varsa reklam KPI'ları da aynı özetten gelir.
+ad_spend = summary_value(kreatif_summary, ["total_ad_spend", "ad_spend", "meta_spend"], ad_spend)
+ad_revenue = summary_value(kreatif_summary, ["total_ad_revenue", "ad_revenue", "reklam_geliri"], ad_revenue)
+ad_purchases = summary_value(kreatif_summary, ["ad_purchases", "purchases", "alisverisler"], ad_purchases)
 overall_roas = safe_divide(ad_revenue, ad_spend)
 cac = safe_divide(ad_spend, new_customer_count) if new_customer_count else safe_divide(ad_spend, ad_purchases)
 
@@ -1400,6 +1540,9 @@ if show_debug:
         st.dataframe(trendyol_debug, use_container_width=True, hide_index=True)
         st.write("Kreatif/Meta debug")
         st.dataframe(creative_debug, use_container_width=True, hide_index=True)
+        st.write("Panel summary dosyaları")
+        st.dataframe(summary_info_df, use_container_width=True, hide_index=True)
+
         st.write("Kaynak klasörleri")
         st.code(f"Shopify: {SHOPIFY_DIR}\nTrendyol: {TRENDYOL_DIR}\nHepsiburada: {HEPSIBURADA_DIR}\nKreatif/Meta: {KREATIF_DIR}")
 
@@ -1639,5 +1782,8 @@ with tab5:
     ])
     st.dataframe(status, use_container_width=True, hide_index=True)
 
+    st.markdown("### Panel Summary Durumu")
+    st.dataframe(summary_info_df, use_container_width=True, hide_index=True)
+
     st.markdown("### Önemli veri kuralı")
-    st.info("Net ciro Shopify dosyasından alınır. Kreatif_Takip yalnızca Meta reklam/kreatif verisi olarak kullanılır.")
+    st.info("Yapay Zeka önce her panelin panel_summary.csv dosyasını okur. Böylece panellerde görünen aynı istatistikler AI sayfasında aynı değerle toplanır. Summary yoksa ham dosyalardan fallback hesaplama yapar.")
