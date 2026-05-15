@@ -26,6 +26,11 @@ st.caption(
     "Built for Shopify orders, Shopify traffic exports, Shopify cost table, manual inventory, Meta Ads performance exports, and Meta billing spend."
 )
 
+# Bu dosyanın bulunduğu klasör:
+# e-ticaret-analiz/pages/Shopify_app/
+# Tüm Shopify CSV dosyaları bu klasörden okunacak.
+DATA_DIR = Path(__file__).resolve().parent
+
 
 # ==============================
 # Helpers
@@ -110,10 +115,13 @@ def normalize_text(text: str) -> str:
 
 
 def find_first_existing(patterns):
+    """
+    Streamlit ana sayfadan runpy ile çalıştırıldığı için çalışma klasörü farklı olabilir.
+    Bu yüzden dosyaları bulunduğumuz klasörden, yani DATA_DIR içinden arıyoruz.
+    """
     files = []
     for p in patterns:
-        files.extend(glob.glob(p))
-        files.extend(glob.glob(os.path.join("/mnt/data", p)))
+        files.extend(glob.glob(str(DATA_DIR / p)))
     deduped = []
     seen = set()
     for f in files:
@@ -136,8 +144,12 @@ def get_all_csv_files():
 
 
 def get_shopify_order_files():
+    """
+    Shopify sipariş dosyalarını sadece dosya adına göre değil, kolonlara göre de tanır.
+    Böylece orders_export_1.csv gibi Shopify'ın kendi verdiği dosya adları da okunur.
+    """
     files = get_all_csv_files()
-    excluded_names = {
+    excluded_exact = {
         "shopify002.csv",
         "shopify003.csv",
         "shopify004.csv",
@@ -147,15 +159,38 @@ def get_shopify_order_files():
         "meta070426.csv",
         "meta_ads_template_shopify.csv",
     }
+
     order_files = []
     for path in files:
         name = os.path.basename(path).lower()
-        if name in excluded_names:
+
+        if name in excluded_exact:
+            continue
+        if "maliyet" in name or "cost" in name:
             continue
         if "meta" in name or "facebook" in name or "formatted report" in name:
             continue
-        if "shopify" in name:
+        if "shopify002" in name or "shopify003" in name or "shopify004" in name:
+            continue
+        if "zamana göre" in name or "oturum" in name:
+            continue
+        if "fatura" in name:
+            continue
+
+        # Dosya adı Shopify içeriyorsa direkt adaydır.
+        if "shopify" in name or "orders_export" in name or "order" in name:
             order_files.append(path)
+            continue
+
+        # Dosya adı farklı olsa bile kolonları Shopify sipariş export'una benziyorsa aday yap.
+        try:
+            sample = read_shopify_order_csv_robust(path)
+            required_cols = {"Name", "Created at", "Lineitem name"}
+            if not sample.empty and required_cols.issubset(set(sample.columns)):
+                order_files.append(path)
+        except Exception:
+            pass
+
     return sorted(set(order_files))
 
 
