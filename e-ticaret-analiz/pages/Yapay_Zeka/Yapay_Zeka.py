@@ -467,47 +467,111 @@ def load_shopify_orders() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 # TRENDYOL / HEPSIBURADA BASIC LOADERS
 # =========================================================
 @st.cache_data(show_spinner=False)
-def load_trendyol_basic() -> tuple[pd.DataFrame, pd.DataFrame]:
+def load_trendyol_basic() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Trendyol'u net ciroya dahil eden sağlam okuyucu.
+
+    Okuduğu dosya tipleri:
+    - Trendyol...Tedarikci_Siparisleri.csv/xlsx
+    - Trendyol sipariş exportları
+    - Dosya adı farklı olsa bile içinde sipariş numarası + tutar kolonu olan Trendyol dosyaları
+
+    Not:
+    Reklam/kreatif verisi Trendyol'dan değil Kreatif_Takip/Meta'dan alınır.
+    """
     rows = []
     debug = []
 
     if not TRENDYOL_DIR.exists():
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame([{
+            "file": "",
+            "status": "ERROR",
+            "rows": 0,
+            "net_sales": 0.0,
+            "notes": f"Trendyol klasörü bulunamadı: {TRENDYOL_DIR}",
+        }])
 
-    files = list(TRENDYOL_DIR.glob("*.csv")) + list(TRENDYOL_DIR.glob("*.xlsx")) + list(TRENDYOL_DIR.glob("*.xls"))
+    files = (
+        list(TRENDYOL_DIR.glob("*.csv"))
+        + list(TRENDYOL_DIR.glob("*.xlsx"))
+        + list(TRENDYOL_DIR.glob("*.xls"))
+    )
 
-    for path in files:
+    for path in sorted(files):
         name = normalize_text(path.name)
 
-        # Sadece sipariş dosyalarını satış cirosu için kullan.
-        if "tedarikci siparisleri" not in name and "siparis" not in name:
+        # Maliyet/reklam/mağaza özeti satış satırı olarak kullanılmasın.
+        if any(x in name for x in ["maliyet", "reklam", "ads", "magaza raporu", "mağaza raporu", "manual weekly"]):
+            debug.append({
+                "file": path.name,
+                "status": "SKIPPED",
+                "rows": 0,
+                "net_sales": 0.0,
+                "notes": "Satış dosyası değil: maliyet/reklam/mağaza raporu.",
+            })
             continue
 
+        # Dosya adında sipariş sinyali yoksa yine de kolon bazlı deneyeceğiz.
         df, enc, sep = read_table_flexible(path)
         if df.empty:
-            debug.append({"file": path.name, "status": "ERROR", "rows": 0, "notes": "Okunamadı"})
+            debug.append({
+                "file": path.name,
+                "status": "ERROR",
+                "rows": 0,
+                "net_sales": 0.0,
+                "notes": "Dosya okunamadı.",
+            })
             continue
 
-        # Dosya bir açıklama satırıyla başladıysa tekrar dene.
-        if not find_col(df, ["Sipariş Tarihi", "Siparis Tarihi", "Sipariş Numarası", "Siparis Numarasi"]):
-            df2, enc2, sep2 = read_table_flexible(path, skiprows=1)
-            if not df2.empty:
-                df, enc, sep = df2, enc2, sep2
-
+        # Bazı Trendyol raporlarında ilk satır açıklama olabilir.
         date_col = find_col(df, ["Sipariş Tarihi", "Siparis Tarihi", "Tarih", "Order Date"])
-        order_col = find_col(df, ["Sipariş Numarası", "Siparis Numarasi", "Order Number", "Order"])
+        order_col = find_col(df, ["Sipariş Numarası", "Siparis Numarasi", "Sipariş No", "Siparis No", "Order Number", "Order"])
         product_col = find_col(df, ["Ürün Adı", "Urun Adi", "Ürün Ad", "Urun Ad", "Product Name", "Product"])
-        qty_col = find_col(df, ["Adet", "Miktar", "Quantity"])
+        qty_col = find_col(df, ["Adet", "Miktar", "Quantity", "Ürün Adedi", "Urun Adedi"])
         revenue_col = find_col(df, [
-            "Faturalanacak Tutar", "Satış Tutarı", "Satis Tutari", "Ürün Tutarı", "Urun Tutari",
+            "Faturalanacak Tutar", "Satış Tutarı", "Satis Tutari",
+            "Ürün Tutarı", "Urun Tutari", "Toplam Tutar", "Net Tutar",
             "Tutar", "Total", "Amount"
         ])
-        sku_col = find_col(df, ["Barkod", "Barcode", "SKU", "Stok Kodu"])
+        sku_col = find_col(df, ["Barkod", "Barcode", "SKU", "Stok Kodu", "Ürün Barkodu", "Urun Barkodu"])
         status_col = find_col(df, ["Sipariş Statüsü", "Siparis Statusu", "Durum", "Status"])
 
-        if not revenue_col:
-            debug.append({"file": path.name, "status": "WARNING", "rows": len(df), "notes": "Ciro/tutar kolonu bulunamadı"})
+        if not order_col or not revenue_col:
+            df2, enc2, sep2 = read_table_flexible(path, skiprows=1)
+            if not df2.empty:
+                date_col = find_col(df2, ["Sipariş Tarihi", "Siparis Tarihi", "Tarih", "Order Date"])
+                order_col = find_col(df2, ["Sipariş Numarası", "Siparis Numarasi", "Sipariş No", "Siparis No", "Order Number", "Order"])
+                product_col = find_col(df2, ["Ürün Adı", "Urun Adi", "Ürün Ad", "Urun Ad", "Product Name", "Product"])
+                qty_col = find_col(df2, ["Adet", "Miktar", "Quantity", "Ürün Adedi", "Urun Adedi"])
+                revenue_col = find_col(df2, [
+                    "Faturalanacak Tutar", "Satış Tutarı", "Satis Tutari",
+                    "Ürün Tutarı", "Urun Tutari", "Toplam Tutar", "Net Tutar",
+                    "Tutar", "Total", "Amount"
+                ])
+                sku_col = find_col(df2, ["Barkod", "Barcode", "SKU", "Stok Kodu", "Ürün Barkodu", "Urun Barkodu"])
+                status_col = find_col(df2, ["Sipariş Statüsü", "Siparis Statusu", "Durum", "Status"])
+                if order_col and revenue_col:
+                    df, enc, sep = df2, enc2, sep2
+
+        # Eğer dosya adı sipariş değilse ama kolonlar siparişe benzemiyorsa geç.
+        looks_like_order = bool(order_col and revenue_col)
+        name_has_order = ("siparis" in name or "sipariş" in name or "tedarikci" in name or "order" in name)
+
+        if not looks_like_order:
+            debug.append({
+                "file": path.name,
+                "status": "SKIPPED",
+                "rows": len(df),
+                "net_sales": 0.0,
+                "notes": "Trendyol satış/sipariş kolonları bulunamadı. Gerekli: Sipariş Numarası + Tutar.",
+            })
             continue
+
+        if not name_has_order and looks_like_order:
+            # Kolonlar siparişe benziyorsa dahil et, ama not düş.
+            note_prefix = "Dosya adı sipariş değil ama kolonlardan satış dosyası olarak algılandı."
+        else:
+            note_prefix = "Trendyol sipariş dosyası okundu."
 
         tmp = pd.DataFrame({
             "platform": "Trendyol",
@@ -521,15 +585,30 @@ def load_trendyol_basic() -> tuple[pd.DataFrame, pd.DataFrame]:
             "source_file": path.name,
         })
 
-        tmp["is_cancelled_or_returned"] = tmp["status"].str.contains("iptal|iade|cancel|return", case=False, na=False)
+        tmp["is_cancelled_or_returned"] = tmp["status"].str.contains(
+            "iptal|iade|cancel|return|red|reddedildi", case=False, na=False
+        )
         tmp.loc[tmp["is_cancelled_or_returned"], ["qty", "line_revenue"]] = 0.0
 
-        debug.append({"file": path.name, "status": "OK", "rows": len(tmp), "notes": f"{enc}/{sep}"})
-        rows.append(tmp)
+        # Eksi/sıfır satırlar sipariş sayısını bozmasın.
+        tmp = tmp[tmp["line_revenue"].fillna(0) >= 0].copy()
+
+        net_sales = float(tmp["line_revenue"].sum()) if not tmp.empty else 0.0
+        debug.append({
+            "file": path.name,
+            "status": "OK" if net_sales > 0 else "WARNING",
+            "rows": len(tmp),
+            "net_sales": net_sales,
+            "notes": f"{note_prefix} Encoding={enc}, sep={sep}, revenue_col={revenue_col}",
+        })
+
+        if not tmp.empty:
+            rows.append(tmp)
 
     lines = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+
     if lines.empty:
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(debug)
 
     orders = lines.groupby("order_name", as_index=False).agg(
         platform=("platform", "first"),
@@ -537,8 +616,9 @@ def load_trendyol_basic() -> tuple[pd.DataFrame, pd.DataFrame]:
         net_sales=("line_revenue", "sum"),
         source_file=("source_file", "first"),
     )
-    orders["order_count"] = 1
-    return orders, lines
+    orders["order_count"] = orders["net_sales"].gt(0).astype(int)
+
+    return orders, lines, pd.DataFrame(debug)
 
 
 @st.cache_data(show_spinner=False)
@@ -710,7 +790,7 @@ def load_creative_ads() -> tuple[pd.DataFrame, pd.DataFrame]:
 def build_model():
     shopify_costs = load_shopify_costs()
     shopify_orders, shopify_lines, shopify_debug = load_shopify_orders()
-    trendyol_orders, trendyol_lines = load_trendyol_basic()
+    trendyol_orders, trendyol_lines, trendyol_debug = load_trendyol_basic()
     hb_orders, hb_lines = load_hepsiburada_basic()
     creative_ads, creative_debug = load_creative_ads()
 
@@ -752,6 +832,8 @@ def build_model():
         issues.append("Shopify sipariş verisi okunamadı. Net ciro Shopify dosyasından alınmalıdır.")
     if shopify_costs.empty:
         issues.append("Shopify maliyet tablosu okunamadı. Kâr hesabı eksik olabilir.")
+    if trendyol_orders.empty:
+        issues.append("Trendyol sipariş verisi okunamadı. Trendyol net ciro için pages/smartek_app klasöründe Tedarikci_Siparisleri / sipariş dosyası olmalı.")
     if creative_ads.empty:
         issues.append("Kreatif_Takip klasöründen Meta reklam/kreatif verisi okunamadı. ROAS ve reklam harcaması eksik kalır.")
 
@@ -761,6 +843,8 @@ def build_model():
         "shopify_costs": shopify_costs,
         "shopify_debug": shopify_debug,
         "trendyol_orders": trendyol_orders,
+        "trendyol_lines": trendyol_lines,
+        "trendyol_debug": trendyol_debug,
         "hepsiburada_orders": hb_orders,
         "orders": all_orders,
         "lines": all_lines,
@@ -777,6 +861,8 @@ shopify_lines = model["shopify_lines"]
 shopify_costs = model["shopify_costs"]
 shopify_debug = model["shopify_debug"]
 trendyol_orders = model["trendyol_orders"]
+trendyol_lines = model.get("trendyol_lines", pd.DataFrame())
+trendyol_debug = model.get("trendyol_debug", pd.DataFrame())
 hepsiburada_orders = model["hepsiburada_orders"]
 orders_all = model["orders"]
 lines_all = model["lines"]
@@ -1116,10 +1202,12 @@ if show_debug:
     with st.expander("Veri kaynakları / debug", expanded=False):
         st.write("Shopify order debug")
         st.dataframe(shopify_debug, use_container_width=True, hide_index=True)
+        st.write("Trendyol debug")
+        st.dataframe(trendyol_debug, use_container_width=True, hide_index=True)
         st.write("Kreatif/Meta debug")
         st.dataframe(creative_debug, use_container_width=True, hide_index=True)
         st.write("Kaynak klasörleri")
-        st.code(f"Shopify: {SHOPIFY_DIR}\nKreatif/Meta: {KREATIF_DIR}")
+        st.code(f"Shopify: {SHOPIFY_DIR}\nTrendyol: {TRENDYOL_DIR}\nHepsiburada: {HEPSIBURADA_DIR}\nKreatif/Meta: {KREATIF_DIR}")
 
 
 # =========================================================
@@ -1295,7 +1383,7 @@ else:
     st.markdown(local_answer("genel özet"))
 
 
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Shopify", "🎨 Kreatif / Meta", "📦 Ürün", "🧪 Veri Durumu"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Kanallar", "🟠 Trendyol", "🎨 Kreatif / Meta", "📦 Shopify Ürün", "🧪 Veri Durumu"])
 
 with tab1:
     st.subheader("Kanal Bazlı Satış Özeti")
@@ -1308,20 +1396,39 @@ with tab1:
         st.dataframe(shopify_orders.sort_values("order_date", ascending=False), use_container_width=True, hide_index=True)
 
 with tab2:
+    st.subheader("Trendyol Kaynaklı Satış Verisi")
+    st.info("Trendyol net ciro burada pages/smartek_app klasöründeki sipariş / Tedarikci_Siparisleri dosyalarından alınır.")
+    if trendyol_debug.empty:
+        st.warning("Trendyol debug verisi yok.")
+    else:
+        st.markdown("### Trendyol Dosya Okuma Durumu")
+        st.dataframe(trendyol_debug, use_container_width=True, hide_index=True)
+
+    if trendyol_orders.empty:
+        st.warning("Trendyol sipariş verisi okunamadı.")
+    else:
+        st.markdown("### Trendyol Sipariş Özeti")
+        st.dataframe(trendyol_orders.sort_values("net_sales", ascending=False), use_container_width=True, hide_index=True)
+
+    if not trendyol_lines.empty:
+        st.markdown("### Trendyol Ürün Satırları")
+        st.dataframe(trendyol_lines.sort_values("line_revenue", ascending=False).head(100), use_container_width=True, hide_index=True)
+
+with tab3:
     st.subheader("Kreatif_Takip Kaynaklı Meta Verisi")
     if creative_summary.empty:
         st.warning("Kreatif/Meta verisi yok.")
     else:
         st.dataframe(creative_summary.sort_values("spend", ascending=False), use_container_width=True, hide_index=True)
 
-with tab3:
+with tab4:
     st.subheader("Shopify Ürün ve Kâr")
     if product_summary.empty:
         st.warning("Ürün verisi yok.")
     else:
         st.dataframe(product_summary, use_container_width=True, hide_index=True)
 
-with tab4:
+with tab5:
     st.subheader("Veri Kaynakları")
     status = pd.DataFrame([
         {"Alan": "Shopify Net Ciro", "Kaynak": str(SHOPIFY_DIR), "Durum": "OK" if not shopify_orders.empty else "Eksik"},
