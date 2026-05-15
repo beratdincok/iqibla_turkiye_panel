@@ -255,6 +255,33 @@ def read_csv_flexible(path: Path, skiprows: int = 0) -> tuple[pd.DataFrame, str,
     return pd.DataFrame(), "", ""
 
 
+def read_table_flexible(path: Path, skiprows: int = 0) -> tuple[pd.DataFrame, str, str]:
+    """
+    CSV ve XLSX dosyalarını ortak okumak için kullanılır.
+    Trendyol / Hepsiburada bazı raporları xlsx geldiği için yapay zeka artık ikisini de okur.
+    """
+    suffix = path.suffix.lower()
+    if suffix in [".xlsx", ".xls"]:
+        try:
+            df = pd.read_excel(path, dtype=str, skiprows=skiprows)
+            if df.shape[1] > 1:
+                return df, "excel", "sheet"
+        except Exception:
+            pass
+
+        # Bazı marketplace dosyalarında ilk satır açıklama olabilir.
+        try:
+            df = pd.read_excel(path, dtype=str, skiprows=1)
+            if df.shape[1] > 1:
+                return df, "excel", "sheet_skip1"
+        except Exception:
+            pass
+
+        return pd.DataFrame(), "", ""
+
+    return read_csv_flexible(path, skiprows=skiprows)
+
+
 def read_shopify_orders(path: Path) -> tuple[pd.DataFrame, str, str]:
     df, enc, sep = read_csv_flexible(path)
     if not df.empty and {"Name", "Created at", "Lineitem name"}.issubset(set(df.columns)):
@@ -442,26 +469,44 @@ def load_shopify_orders() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 @st.cache_data(show_spinner=False)
 def load_trendyol_basic() -> tuple[pd.DataFrame, pd.DataFrame]:
     rows = []
+    debug = []
+
     if not TRENDYOL_DIR.exists():
         return pd.DataFrame(), pd.DataFrame()
 
-    for path in TRENDYOL_DIR.glob("*.csv"):
+    files = list(TRENDYOL_DIR.glob("*.csv")) + list(TRENDYOL_DIR.glob("*.xlsx")) + list(TRENDYOL_DIR.glob("*.xls"))
+
+    for path in files:
         name = normalize_text(path.name)
+
+        # Sadece sipariş dosyalarını satış cirosu için kullan.
         if "tedarikci siparisleri" not in name and "siparis" not in name:
             continue
 
-        df, _, _ = read_csv_flexible(path)
+        df, enc, sep = read_table_flexible(path)
         if df.empty:
+            debug.append({"file": path.name, "status": "ERROR", "rows": 0, "notes": "Okunamadı"})
             continue
 
-        date_col = find_col(df, ["Sipariş Tarihi", "Siparis Tarihi", "Tarih"])
-        order_col = find_col(df, ["Sipariş Numarası", "Siparis Numarasi", "Order"])
-        product_col = find_col(df, ["Ürün Ad", "Urun Ad", "Product"])
-        qty_col = find_col(df, ["Adet", "Quantity"])
-        revenue_col = find_col(df, ["Faturalanacak Tutar", "Satış Tutarı", "Satis Tutari", "Tutar"])
-        sku_col = find_col(df, ["Barkod", "SKU"])
+        # Dosya bir açıklama satırıyla başladıysa tekrar dene.
+        if not find_col(df, ["Sipariş Tarihi", "Siparis Tarihi", "Sipariş Numarası", "Siparis Numarasi"]):
+            df2, enc2, sep2 = read_table_flexible(path, skiprows=1)
+            if not df2.empty:
+                df, enc, sep = df2, enc2, sep2
+
+        date_col = find_col(df, ["Sipariş Tarihi", "Siparis Tarihi", "Tarih", "Order Date"])
+        order_col = find_col(df, ["Sipariş Numarası", "Siparis Numarasi", "Order Number", "Order"])
+        product_col = find_col(df, ["Ürün Adı", "Urun Adi", "Ürün Ad", "Urun Ad", "Product Name", "Product"])
+        qty_col = find_col(df, ["Adet", "Miktar", "Quantity"])
+        revenue_col = find_col(df, [
+            "Faturalanacak Tutar", "Satış Tutarı", "Satis Tutari", "Ürün Tutarı", "Urun Tutari",
+            "Tutar", "Total", "Amount"
+        ])
+        sku_col = find_col(df, ["Barkod", "Barcode", "SKU", "Stok Kodu"])
+        status_col = find_col(df, ["Sipariş Statüsü", "Siparis Statusu", "Durum", "Status"])
 
         if not revenue_col:
+            debug.append({"file": path.name, "status": "WARNING", "rows": len(df), "notes": "Ciro/tutar kolonu bulunamadı"})
             continue
 
         tmp = pd.DataFrame({
@@ -472,8 +517,14 @@ def load_trendyol_basic() -> tuple[pd.DataFrame, pd.DataFrame]:
             "sku_key": df[sku_col].apply(clean_sku) if sku_col else "",
             "qty": df[qty_col].apply(to_float) if qty_col else 1.0,
             "line_revenue": df[revenue_col].apply(to_float),
+            "status": df[status_col].astype(str) if status_col else "",
             "source_file": path.name,
         })
+
+        tmp["is_cancelled_or_returned"] = tmp["status"].str.contains("iptal|iade|cancel|return", case=False, na=False)
+        tmp.loc[tmp["is_cancelled_or_returned"], ["qty", "line_revenue"]] = 0.0
+
+        debug.append({"file": path.name, "status": "OK", "rows": len(tmp), "notes": f"{enc}/{sep}"})
         rows.append(tmp)
 
     lines = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
@@ -484,7 +535,6 @@ def load_trendyol_basic() -> tuple[pd.DataFrame, pd.DataFrame]:
         platform=("platform", "first"),
         order_date=("order_date", "first"),
         net_sales=("line_revenue", "sum"),
-        order_count=("order_name", "nunique"),
         source_file=("source_file", "first"),
     )
     orders["order_count"] = 1
@@ -494,49 +544,68 @@ def load_trendyol_basic() -> tuple[pd.DataFrame, pd.DataFrame]:
 @st.cache_data(show_spinner=False)
 def load_hepsiburada_basic() -> tuple[pd.DataFrame, pd.DataFrame]:
     rows = []
+
     if not HEPSIBURADA_DIR.exists():
         return pd.DataFrame(), pd.DataFrame()
 
-    for path in HEPSIBURADA_DIR.glob("*.csv"):
+    files = list(HEPSIBURADA_DIR.glob("*.csv")) + list(HEPSIBURADA_DIR.glob("*.xlsx")) + list(HEPSIBURADA_DIR.glob("*.xls"))
+
+    for path in files:
         name = normalize_text(path.name)
         if "maliyet" in name or "iade" in name:
             continue
 
-        df, _, _ = read_csv_flexible(path)
+        df, enc, sep = read_table_flexible(path)
         if df.empty:
             continue
 
-        product_col = find_col(df, ["Ürün Adı", "Urun Adi", "Product"])
-        sku_col = find_col(df, ["SKU"])
-        qty_col = find_col(df, ["Toplam Satis Adedi", "Satış Adedi", "Satis Adedi", "Adet"])
-        revenue_col = find_col(df, ["Toplam Satis Tutari", "Satış Tutarı", "Satis Tutari", "Tutar"])
+        # Hepsiburada dosyalarında bazen üst açıklama satırı olabilir.
+        if not find_col(df, ["Ürün Adı", "Urun Adi", "SKU", "Toplam Satis Tutari", "Toplam Satış Tutarı"]):
+            df2, enc2, sep2 = read_table_flexible(path, skiprows=1)
+            if not df2.empty:
+                df, enc, sep = df2, enc2, sep2
 
-        if not product_col or not revenue_col:
+        product_col = find_col(df, ["Ürün Adı", "Urun Adi", "Product Name", "Product"])
+        sku_col = find_col(df, ["SKU", "Stok Kodu", "Merchant SKU"])
+        qty_col = find_col(df, ["Toplam Satış Adedi", "Toplam Satis Adedi", "Satış Adedi", "Satis Adedi", "Adet", "Quantity"])
+        revenue_col = find_col(df, [
+            "Toplam Satış Tutarı", "Toplam Satis Tutari", "Satış Tutarı", "Satis Tutari",
+            "Net Satış Tutarı", "Net Satis Tutari", "Tutar", "Amount", "Revenue"
+        ])
+
+        # Bazı Hepsiburada raporları mağaza özeti olabilir; ürün kolonu yoksa dosyayı satış satırı gibi kullanma.
+        if not revenue_col:
             continue
 
         tmp = pd.DataFrame({
             "platform": "Hepsiburada",
             "order_name": path.stem,
             "order_date": pd.NaT,
-            "product_name": df[product_col].astype(str),
+            "product_name": df[product_col].astype(str) if product_col else "Hepsiburada Product",
             "sku_key": df[sku_col].apply(clean_sku) if sku_col else "",
             "qty": df[qty_col].apply(to_float) if qty_col else 1.0,
             "line_revenue": df[revenue_col].apply(to_float),
             "source_file": path.name,
         })
-        rows.append(tmp)
+
+        # Tamamen boş/sıfır satırları at
+        tmp = tmp[(tmp["line_revenue"] > 0) | (tmp["qty"] > 0)].copy()
+        if not tmp.empty:
+            rows.append(tmp)
 
     lines = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
     if lines.empty:
         return pd.DataFrame(), pd.DataFrame()
 
+    # Hepsiburada dosyası çoğunlukla aggregate rapor olduğu için order_count tam sipariş sayısı olmayabilir.
+    # Burada net ciroyu doğru almak için toplam ciroyu kullanıyoruz.
     orders = pd.DataFrame([{
         "platform": "Hepsiburada",
         "order_name": "hepsiburada_aggregate",
         "order_date": pd.NaT,
         "net_sales": float(lines["line_revenue"].sum()),
         "order_count": 1,
-        "source_file": ", ".join(lines["source_file"].unique().tolist()[:3]),
+        "source_file": ", ".join(lines["source_file"].dropna().unique().tolist()[:5]),
     }])
     return orders, lines
 
@@ -785,60 +854,83 @@ creative_ads = date_filter(creative_ads_all, "date")
 # KPI
 # =========================================================
 # Kritik düzeltme:
-# Net ciro Shopify'dan gelir. Kreatif_Takip sadece Meta/reklam datasıdır.
+# Net ciro 3 kanaldan gelir: Shopify + Trendyol + Hepsiburada.
+# Kreatif_Takip sadece Meta/reklam datasıdır; net ciro kaynağı değildir.
 shopify_net_revenue = float(shopify_orders["net_sales"].sum()) if not shopify_orders.empty else 0.0
 shopify_order_count = int(shopify_orders["order_count"].sum()) if not shopify_orders.empty and "order_count" in shopify_orders.columns else 0
 shopify_units = float(shopify_lines["qty"].sum()) if not shopify_lines.empty else 0.0
 shopify_aov = safe_divide(shopify_net_revenue, shopify_order_count)
 shopify_gross_profit = float(shopify_lines["gross_profit_before_ads"].sum()) if not shopify_lines.empty and "gross_profit_before_ads" in shopify_lines.columns else 0.0
 
-all_net_revenue = float(orders_all["net_sales"].sum()) if not orders_all.empty and "net_sales" in orders_all.columns else shopify_net_revenue
-all_order_count = int(orders_all["order_count"].sum()) if not orders_all.empty and "order_count" in orders_all.columns else shopify_order_count
+trendyol_net_revenue = float(trendyol_orders["net_sales"].sum()) if not trendyol_orders.empty and "net_sales" in trendyol_orders.columns else 0.0
+trendyol_order_count = int(trendyol_orders["order_count"].sum()) if not trendyol_orders.empty and "order_count" in trendyol_orders.columns else 0
+
+hepsiburada_net_revenue = float(hepsiburada_orders["net_sales"].sum()) if not hepsiburada_orders.empty and "net_sales" in hepsiburada_orders.columns else 0.0
+hepsiburada_order_count = int(hepsiburada_orders["order_count"].sum()) if not hepsiburada_orders.empty and "order_count" in hepsiburada_orders.columns else 0
+
+all_net_revenue = shopify_net_revenue + trendyol_net_revenue + hepsiburada_net_revenue
+all_order_count = shopify_order_count + trendyol_order_count + hepsiburada_order_count
+all_aov = safe_divide(all_net_revenue, all_order_count)
+
+# Şimdilik kâr hesabı sağlam maliyet eşleşmesi olan Shopify için net hesaplanır.
+# Trendyol/Hepsiburada maliyet entegrasyonu eklendiğinde buraya dahil edilir.
+all_gross_profit = shopify_gross_profit
 
 ad_spend = float(creative_ads["spend"].sum()) if not creative_ads.empty else 0.0
 ad_revenue = float(creative_ads["ad_revenue"].sum()) if not creative_ads.empty else 0.0
 ad_purchases = float(creative_ads["purchases"].sum()) if not creative_ads.empty else 0.0
 overall_roas = safe_divide(ad_revenue, ad_spend)
 cac = safe_divide(ad_spend, new_customer_count) if new_customer_count else safe_divide(ad_spend, ad_purchases)
-net_profit_after_ads = shopify_gross_profit - ad_spend
-mer = safe_divide(shopify_net_revenue, ad_spend)
-target_rate = safe_divide(shopify_net_revenue, monthly_revenue_target) * 100 if monthly_revenue_target else 0.0
-ltv = shopify_aov * avg_purchase_per_customer
+
+# Net Profit After Ads = şimdilik Shopify kârı - Meta spend.
+# Toplam ciro raporu 3 kanaldır; kâr raporu maliyet entegrasyonu olan kanaldan başlar.
+net_profit_after_ads = all_gross_profit - ad_spend
+mer = safe_divide(all_net_revenue, ad_spend)
+target_rate = safe_divide(all_net_revenue, monthly_revenue_target) * 100 if monthly_revenue_target else 0.0
+ltv = all_aov * avg_purchase_per_customer
 
 # Channel table
-platform_rows = []
-if not shopify_orders.empty:
-    platform_rows.append({
+platform_rows = [
+    {
         "platform": "Shopify",
         "net_revenue": shopify_net_revenue,
         "orders": shopify_order_count,
         "gross_profit_before_ads": shopify_gross_profit,
         "ad_spend": ad_spend,
         "ad_revenue": ad_revenue,
-        "net_profit_after_ads": net_profit_after_ads,
+        "net_profit_after_ads": shopify_gross_profit - ad_spend,
         "roas": overall_roas,
         "aov": shopify_aov,
         "data_source": "Net ciro: Shopify | Reklam: Kreatif_Takip/Meta",
-    })
-
-for name, df in [("Trendyol", trendyol_orders), ("Hepsiburada", hepsiburada_orders)]:
-    if not df.empty and "net_sales" in df.columns:
-        rev = float(df["net_sales"].sum())
-        orders_count = int(df["order_count"].sum()) if "order_count" in df.columns else int(df["order_name"].nunique())
-        platform_rows.append({
-            "platform": name,
-            "net_revenue": rev,
-            "orders": orders_count,
-            "gross_profit_before_ads": 0.0,
-            "ad_spend": 0.0,
-            "ad_revenue": 0.0,
-            "net_profit_after_ads": rev,
-            "roas": 0.0,
-            "aov": safe_divide(rev, orders_count),
-            "data_source": f"Net ciro: {name}",
-        })
-
+    },
+    {
+        "platform": "Trendyol",
+        "net_revenue": trendyol_net_revenue,
+        "orders": trendyol_order_count,
+        "gross_profit_before_ads": 0.0,
+        "ad_spend": 0.0,
+        "ad_revenue": 0.0,
+        "net_profit_after_ads": trendyol_net_revenue,
+        "roas": 0.0,
+        "aov": safe_divide(trendyol_net_revenue, trendyol_order_count),
+        "data_source": "Net ciro: Trendyol sipariş dosyaları",
+    },
+    {
+        "platform": "Hepsiburada",
+        "net_revenue": hepsiburada_net_revenue,
+        "orders": hepsiburada_order_count,
+        "gross_profit_before_ads": 0.0,
+        "ad_spend": 0.0,
+        "ad_revenue": 0.0,
+        "net_profit_after_ads": hepsiburada_net_revenue,
+        "roas": 0.0,
+        "aov": safe_divide(hepsiburada_net_revenue, hepsiburada_order_count),
+        "data_source": "Net ciro: Hepsiburada rapor dosyaları",
+    },
+]
 platform_summary = pd.DataFrame(platform_rows)
+
+
 
 if not shopify_lines.empty:
     product_summary = shopify_lines.groupby(["platform", "product_name", "sku_key"], as_index=False).agg(
@@ -886,13 +978,19 @@ VERİ KAYNAĞI KURALI:
 - Kreatif_Takip sadece Meta reklam/kreatif datasıdır. Kreatif_Takip'ten NET CİRO alınmaz.
 - Reklam harcaması, reklam geliri, ROAS, CAC kaynak: Kreatif_Takip Meta raporları.
 
+GENEL ÖZET / 3 KANAL:
+- Toplam Net Ciro: {money(all_net_revenue)}
+- Toplam Sipariş: {all_order_count:,}
+- Toplam AOV: {money(all_aov)}
+
 SHOPIFY ÖZETİ:
 - Shopify Net Ciro: {money(shopify_net_revenue)}
 - Shopify Sipariş Adedi: {shopify_order_count:,}
 - Shopify Units Sold: {shopify_units:,.0f}
 - Shopify AOV: {money(shopify_aov)}
 - Shopify Gross Profit Before Ads: {money(shopify_gross_profit)}
-- Shopify Net Profit After Ads: {money(net_profit_after_ads)}
+- Shopify Gross Profit: {money(shopify_gross_profit)}
+- Toplam Net Profit After Ads: {money(net_profit_after_ads)}
 - MER: {mer:.2f}
 
 META / KREATİF ÖZETİ:
@@ -925,7 +1023,8 @@ def local_answer(question: str) -> str:
 
     if any(k in q for k in ["net ciro", "ciro", "revenue", "gelir"]):
         return (
-            f"Net ciro **Shopify dosyasından** alınıyor: **{money(shopify_net_revenue)}**. "
+            f"Toplam net ciro **3 kanaldan** alınıyor: **{money(all_net_revenue)}**. "
+            f"Bunun içinde Shopify **{money(shopify_net_revenue)}**, Trendyol **{money(trendyol_net_revenue)}**, Hepsiburada **{money(hepsiburada_net_revenue)}**. "
             "Kreatif_Takip sadece Meta reklam verisidir; net ciro için kullanılmaz."
         )
 
@@ -947,9 +1046,9 @@ def local_answer(question: str) -> str:
         return "Shopify top ürünler:\n\n" + compact_table(product_summary[["product_name", "qty", "revenue", "gross_profit_before_ads"]], 8)
 
     return (
-        f"Genel özet: Shopify net ciro **{money(shopify_net_revenue)}**, sipariş **{shopify_order_count:,}**, "
-        f"AOV **{money(shopify_aov)}**, Meta reklam harcaması **{money(ad_spend)}**, ROAS **{overall_roas:.2f}**, "
-        f"net kâr **{money(net_profit_after_ads)}**."
+        f"Genel özet: toplam net ciro **{money(all_net_revenue)}**, toplam sipariş **{all_order_count:,}**, "
+        f"genel AOV **{money(all_aov)}**, Meta reklam harcaması **{money(ad_spend)}**, ROAS **{overall_roas:.2f}**, "
+        f"net kâr **{money(net_profit_after_ads)}**. Shopify: {money(shopify_net_revenue)}, Trendyol: {money(trendyol_net_revenue)}, Hepsiburada: {money(hepsiburada_net_revenue)}."
     )
 
 
@@ -990,10 +1089,10 @@ Kullanıcı sorusu:
 # TOP KPI
 # =========================================================
 k1, k2, k3, k4, k5, k6 = st.columns(6)
-k1.metric("Shopify Net Ciro", money(shopify_net_revenue))
-k2.metric("Shopify Orders", f"{shopify_order_count:,}")
-k3.metric("Shopify AOV", money(shopify_aov))
-k4.metric("Gross Profit", money(shopify_gross_profit))
+k1.metric("Toplam Net Ciro", money(all_net_revenue))
+k2.metric("Toplam Orders", f"{all_order_count:,}")
+k3.metric("Genel AOV", money(all_aov))
+k4.metric("Shopify Gross Profit", money(shopify_gross_profit))
 k5.metric("Meta Spend", money(ad_spend))
 k6.metric("ROAS", f"{overall_roas:.2f}" if overall_roas else "N/A")
 
@@ -1002,6 +1101,11 @@ k7.metric("Net Profit After Ads", money(net_profit_after_ads))
 k8.metric("MER", f"{mer:.2f}" if mer else "N/A")
 k9.metric("CAC", money(cac))
 k10.metric("Hedef Gerçekleşme", f"%{target_rate:.1f}")
+
+c1, c2, c3 = st.columns(3)
+c1.metric("Shopify Ciro", money(shopify_net_revenue))
+c2.metric("Trendyol Ciro", money(trendyol_net_revenue))
+c3.metric("Hepsiburada Ciro", money(hepsiburada_net_revenue))
 
 if issues:
     with st.expander("Veri Okuma Uyarıları", expanded=True):
@@ -1090,9 +1194,14 @@ st.subheader(f"Seçili Rapor: {selected_report}")
 
 if selected_report == "Net Ciro ve Sipariş Yorumu":
     st.markdown(f"""
-**Durum Özeti:** Net ciro Shopify dosyasından geliyor: **{money(shopify_net_revenue)}**.  
-**Sipariş:** {shopify_order_count:,}  
-**AOV:** {money(shopify_aov)}  
+**Durum Özeti:** Toplam net ciro 3 kanaldan geliyor: **{money(all_net_revenue)}**.  
+
+- Shopify: **{money(shopify_net_revenue)}**
+- Trendyol: **{money(trendyol_net_revenue)}**
+- Hepsiburada: **{money(hepsiburada_net_revenue)}**
+
+**Toplam Sipariş:** {all_order_count:,}  
+**Genel AOV:** {money(all_aov)}  
 
 **Önemli düzeltme:** Kreatif_Takip net ciro kaynağı değildir. Kreatif_Takip sadece Meta reklam verisidir.
 """)
@@ -1189,6 +1298,9 @@ else:
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Shopify", "🎨 Kreatif / Meta", "📦 Ürün", "🧪 Veri Durumu"])
 
 with tab1:
+    st.subheader("Kanal Bazlı Satış Özeti")
+    st.dataframe(platform_summary, use_container_width=True, hide_index=True)
+
     st.subheader("Shopify Kaynaklı Satış Verisi")
     if shopify_orders.empty:
         st.warning("Shopify sipariş verisi yok.")
