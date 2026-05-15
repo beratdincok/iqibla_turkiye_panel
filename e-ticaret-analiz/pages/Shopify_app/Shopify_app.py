@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import csv
-import os
 import re
 import unicodedata
 from pathlib import Path
@@ -16,105 +15,45 @@ import streamlit as st
 # =========================================================
 # PAGE
 # =========================================================
-st.set_page_config(page_title="SMARTEK360 Shopify Dashboard", layout="wide")
+st.set_page_config(page_title="SMARTEK360 Shopify Diagnostic Dashboard", layout="wide")
 
 if "logged_in" not in st.session_state or st.session_state.logged_in is not True:
     st.warning("Bu sayfaya erişmek için önce ana sayfadan giriş yapmalısın.")
     st.stop()
 
-st.title("🟣 SMARTEK360: Shopify Dashboard")
-st.caption("Shopify satış, maliyet, funnel, şehir/bölge, Meta reklam ve fatura dosyalarını kendi klasöründen okur.")
+st.title("🟣 SMARTEK360: Shopify Diagnostic Dashboard")
+st.caption(
+    "Bu sürüm dosyaları sadece raporlamaz; önce klasördeki tüm dosyaları tanır, hata/eksik kolonları gösterir, sonra doğru okunan verilerden KPI üretir."
+)
 
 DATA_DIR = Path(__file__).resolve().parent
-
-# =========================================================
-# MANUAL INVENTORY
-# =========================================================
-MANUAL_INVENTORY = {
-    "j01t green": 102,
-    "j01t camel": 102,
-    "j01 blue": 60,
-    "j01 grey": 47,
-    "j03 pro titanium": 541,
-    "black j01t": 266,
-    "j01t black": 266,
-    "salat counter": 35,
-    "premium black gold 22mm": 9,
-    "premium rose gold 20mm": 7,
-    "premium black gray 22mm": 7,
-    "j01 pink": 120,
-    "j01 green": 120,
-    "j01 black": 160,
-}
-
-
-def inventory_key_for_product(product_name: str) -> str:
-    text = normalize_text(product_name)
-
-    if "jood lite" in text or "j01t" in text:
-        if "yesil" in text or "green" in text:
-            return "j01t green"
-        if "camel" in text or "kum" in text or "bej" in text:
-            return "j01t camel"
-        if "siyah" in text or "black" in text:
-            return "j01t black"
-
-    if "jood 3 pro" in text or "j03 pro" in text:
-        if "titanyum" in text or "titanium" in text or "gri" in text:
-            return "j03 pro titanium"
-
-    if "rekat" in text or "salat" in text or "salavatmatik" in text:
-        return "salat counter"
-
-    if "premium" in text:
-        if "rose" in text and "20" in text:
-            return "premium rose gold 20mm"
-        if "black" in text and "gold" in text and "22" in text:
-            return "premium black gold 22mm"
-        if ("gray" in text or "grey" in text or "gri" in text) and "22" in text:
-            return "premium black gray 22mm"
-
-    if "jood" in text or "j01" in text:
-        if "pembe" in text or "pink" in text:
-            return "j01 pink"
-        if "yesil" in text or "green" in text:
-            return "j01 green"
-        if "siyah" in text or "black" in text:
-            return "j01 black"
-        if "mavi" in text or "blue" in text:
-            return "j01 blue"
-        if "gri" in text or "grey" in text or "gray" in text:
-            return "j01 grey"
-
-    return ""
-
 
 
 # =========================================================
 # HELPERS
 # =========================================================
-def normalize_text(text) -> str:
-    if text is None or pd.isna(text):
+def normalize_text(value) -> str:
+    if value is None or pd.isna(value):
         return ""
-    s = str(text).lower().strip()
+    text = str(value).lower().strip()
     tr_map = str.maketrans({
         "ı": "i", "İ": "i", "ş": "s", "Ş": "s", "ğ": "g", "Ğ": "g",
         "ç": "c", "Ç": "c", "ö": "o", "Ö": "o", "ü": "u", "Ü": "u",
     })
-    s = s.translate(tr_map)
-    s = unicodedata.normalize("NFKD", s)
-    s = "".join(ch for ch in s if not unicodedata.combining(ch))
-    s = re.sub(r"[^a-z0-9]+", " ", s)
-    return re.sub(r"\s+", " ", s).strip()
+    text = text.translate(tr_map)
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
-def to_float(val) -> float:
-    if val is None or pd.isna(val) or val == "":
+def to_float(value) -> float:
+    if value is None or pd.isna(value) or value == "":
         return 0.0
-    if isinstance(val, (int, float)):
-        return float(val)
+    if isinstance(value, (int, float)):
+        return float(value)
 
-    s = str(val).strip()
+    s = str(value).strip()
     s = (
         s.replace("TL", "")
         .replace("TRY", "")
@@ -125,7 +64,7 @@ def to_float(val) -> float:
         .replace(" ", "")
     )
 
-    if s.lower() in {"-", "nan", "none", "null", "sürekli", "surekli"}:
+    if s.lower() in {"-", "nan", "none", "null", "sürekli", "surekli", "henüzfaturakesilmemiştir."}:
         return 0.0
 
     if "," in s and "." in s:
@@ -134,7 +73,6 @@ def to_float(val) -> float:
         else:
             s = s.replace(",", "")
     elif "," in s:
-        # 0,01 gibi oranları bozma
         s = s.replace(".", "").replace(",", ".")
     elif "." in s:
         parts = s.split(".")
@@ -152,11 +90,10 @@ def to_float(val) -> float:
             return 0.0
 
 
-def clean_sku(val) -> str:
-    if val is None or pd.isna(val) or val == "":
+def clean_sku(value) -> str:
+    if value is None or pd.isna(value):
         return ""
-    s = str(val).strip().replace(" ", "")
-    s = s.replace("'", "")
+    s = str(value).strip().replace(" ", "").replace("'", "")
     if s.startswith("6-"):
         s = s[2:]
     s = s.replace("-", "")
@@ -170,25 +107,32 @@ def clean_sku(val) -> str:
     return s
 
 
-def find_col(df: pd.DataFrame, keys: list[str]) -> Optional[str]:
+def find_col(df: pd.DataFrame, candidates: list[str]) -> Optional[str]:
     normalized = {normalize_text(c): c for c in df.columns}
 
-    for key in keys:
-        nk = normalize_text(key)
-        for norm, raw in normalized.items():
-            if nk == norm:
-                return raw
+    for candidate in candidates:
+        target = normalize_text(candidate)
+        for norm_col, raw_col in normalized.items():
+            if target == norm_col:
+                return raw_col
 
-    for key in keys:
-        nk = normalize_text(key)
-        for norm, raw in normalized.items():
-            if nk and nk in norm:
-                return raw
+    for candidate in candidates:
+        target = normalize_text(candidate)
+        for norm_col, raw_col in normalized.items():
+            if target and target in norm_col:
+                return raw_col
 
     return None
 
 
-def read_csv_flexible(path: Path, *, skiprows: int = 0) -> pd.DataFrame:
+def safe_divide(num: float, den: float) -> float:
+    return float(num) / float(den) if den else 0.0
+
+
+def read_csv_flexible(path: Path, skiprows: int = 0) -> tuple[pd.DataFrame, str, str]:
+    """
+    Return: df, encoding, separator
+    """
     encodings = ["utf-8-sig", "utf-8", "iso-8859-9", "cp1254", "latin1"]
     seps = [",", ";", "\t"]
 
@@ -197,30 +141,29 @@ def read_csv_flexible(path: Path, *, skiprows: int = 0) -> pd.DataFrame:
             try:
                 df = pd.read_csv(path, encoding=enc, sep=sep, dtype=str, low_memory=False, skiprows=skiprows)
                 if df.shape[1] > 1:
-                    return df
+                    return df, enc, sep
             except Exception:
                 continue
-    return pd.DataFrame()
+
+    return pd.DataFrame(), "", ""
 
 
-def read_shopify_order_csv_robust(path: Path) -> pd.DataFrame:
+def read_shopify_order_csv_robust(path: Path) -> tuple[pd.DataFrame, str]:
     """
-    Shopify export'larında bazı dosyalarda satırlar tek hücreye düşebiliyor.
-    Bu fonksiyon header 79 kolon olsa bile tek hücreye düşen satırı tekrar csv.reader ile parçalar.
+    Shopify CSV bazen normal gelir, bazen tek hücreye gömülmüş satırlar olur.
+    Bu okuyucu iki durumu da toparlar.
     """
     encodings = ["utf-8-sig", "utf-8", "iso-8859-9", "cp1254", "latin1"]
 
     for enc in encodings:
         try:
             with open(path, "r", encoding=enc, errors="replace", newline="") as f:
-                reader = csv.reader(f)
-                rows = list(reader)
+                rows = list(csv.reader(f))
 
             if not rows:
                 continue
 
             header = rows[0]
-            # Header yanlışlıkla tek hücre geldiyse tekrar parse et.
             if len(header) == 1 and "," in header[0]:
                 header = next(csv.reader([header[0]]))
 
@@ -239,8 +182,7 @@ def read_shopify_order_csv_robust(path: Path) -> pd.DataFrame:
                     except Exception:
                         pass
 
-                # Bazı satırlarda ilk hücre komple satır, geri kalanlar boş gelebilir.
-                if len(row) == header_len and row[0].count(",") > 10 and all(str(x).strip() == "" for x in row[1:]):
+                if len(row) == header_len and row and str(row[0]).count(",") > 10 and all(str(x).strip() == "" for x in row[1:]):
                     try:
                         row = next(csv.reader([row[0]]))
                     except Exception:
@@ -257,169 +199,300 @@ def read_shopify_order_csv_robust(path: Path) -> pd.DataFrame:
             if fixed_rows and header_len > 5:
                 df = pd.DataFrame(fixed_rows, columns=header)
                 df = df.loc[:, ~df.columns.duplicated()]
-                return df
+                return df, enc
 
         except Exception:
             continue
 
-    return pd.DataFrame()
+    return pd.DataFrame(), ""
 
 
-def safe_divide(a: float, b: float) -> float:
-    return float(a) / float(b) if b else 0.0
-
-
-def all_csv_files() -> list[Path]:
-    return sorted(DATA_DIR.glob("*.csv"))
+def money(value: float) -> str:
+    return f"{value:,.2f} TL"
 
 
 # =========================================================
-# FILE CLASSIFICATION
+# FILE DIAGNOSTIC
 # =========================================================
-def is_shopify_order_file(path: Path) -> bool:
-    name = normalize_text(path.name)
+ORDER_REQUIRED = ["Name", "Created at", "Lineitem name"]
+ORDER_RECOMMENDED = ["Lineitem quantity", "Lineitem price", "Total", "Financial Status"]
 
-    if any(x in name for x in ["maliyet", "meta", "billing", "campaign", "fatura", "zamana gore", "oturum"]):
-        return False
+COST_REQUIRED = ["SKU"]
+COST_RECOMMENDED = ["Maliyet", "Komisyon", "Kargo"]
 
-    if any(x in name for x in ["shopify002", "shopify003", "shopify004"]):
-        return False
+FUNNEL_HINTS = ["Oturumlar", "Sepete ekleme", "Ödeme sayfası", "Dönüşüm oranı"]
+GEO_HINTS = ["Oturum ülkesi", "Oturum bölgesi", "Oturum şehri", "Online mağaza ziyaretçileri"]
+GROSS_HINTS = ["Brüt satışlar", "Ay"]
+META_HINTS = ["Amount spent", "Harcanan Tutar", "Campaign", "Kampanya", "Purchase ROAS", "Purchases"]
+BILLING_HINTS = ["Fatura", "Billing", "Amount", "Tutar", "Payment"]
 
-    df = read_shopify_order_csv_robust(path)
+
+def detect_file_type(path: Path) -> dict:
+    name_norm = normalize_text(path.name)
+
+    # 1. Önce robust Shopify order dene
+    order_df, order_enc = read_shopify_order_csv_robust(path)
+    order_cols = set(order_df.columns) if not order_df.empty else set()
+    order_missing = [c for c in ORDER_REQUIRED if c not in order_cols]
+
+    if not order_df.empty and not order_missing:
+        return {
+            "file": path.name,
+            "detected_type": "orders",
+            "status": "OK",
+            "rows": len(order_df),
+            "cols": len(order_df.columns),
+            "encoding": order_enc,
+            "separator": "robust-csv",
+            "required_found": ", ".join(ORDER_REQUIRED),
+            "missing_required": "",
+            "notes": "Shopify sipariş dosyası olarak tanındı.",
+        }
+
+    df, enc, sep = read_csv_flexible(path)
     if df.empty:
-        return False
+        return {
+            "file": path.name,
+            "detected_type": "unreadable",
+            "status": "ERROR",
+            "rows": 0,
+            "cols": 0,
+            "encoding": "",
+            "separator": "",
+            "required_found": "",
+            "missing_required": "",
+            "notes": "CSV okunamadı veya tek kolon olarak kaldı.",
+        }
 
-    required = {"Name", "Created at", "Lineitem name"}
-    return required.issubset(set(df.columns))
+    cols_norm = " ".join([normalize_text(c) for c in df.columns])
 
+    def has_any(words: list[str]) -> bool:
+        return any(normalize_text(w) in cols_norm for w in words)
 
-def classify_files() -> dict[str, list[Path]]:
-    files = all_csv_files()
-    groups = {
-        "orders": [],
-        "costs": [],
-        "funnel": [],
-        "geo": [],
-        "gross_monthly": [],
-        "meta": [],
-        "billing": [],
-        "other": [],
+    if "maliyet" in name_norm or (find_col(df, COST_REQUIRED) and has_any(COST_RECOMMENDED)):
+        missing = []
+        if not find_col(df, COST_REQUIRED):
+            missing.append("SKU")
+        return {
+            "file": path.name,
+            "detected_type": "costs",
+            "status": "OK" if not missing else "WARNING",
+            "rows": len(df),
+            "cols": len(df.columns),
+            "encoding": enc,
+            "separator": sep,
+            "required_found": "SKU" if not missing else "",
+            "missing_required": ", ".join(missing),
+            "notes": "Maliyet tablosu olarak tanındı.",
+        }
+
+    if "shopify002" in name_norm or has_any(FUNNEL_HINTS):
+        return {
+            "file": path.name,
+            "detected_type": "funnel",
+            "status": "OK",
+            "rows": len(df),
+            "cols": len(df.columns),
+            "encoding": enc,
+            "separator": sep,
+            "required_found": "funnel kolonları",
+            "missing_required": "",
+            "notes": "Funnel/oturum dosyası olarak tanındı.",
+        }
+
+    if "shopify003" in name_norm or has_any(GEO_HINTS):
+        return {
+            "file": path.name,
+            "detected_type": "geo",
+            "status": "OK",
+            "rows": len(df),
+            "cols": len(df.columns),
+            "encoding": enc,
+            "separator": sep,
+            "required_found": "geo kolonları",
+            "missing_required": "",
+            "notes": "Şehir/bölge trafik dosyası olarak tanındı.",
+        }
+
+    if "shopify004" in name_norm or has_any(GROSS_HINTS):
+        return {
+            "file": path.name,
+            "detected_type": "gross_monthly",
+            "status": "OK",
+            "rows": len(df),
+            "cols": len(df.columns),
+            "encoding": enc,
+            "separator": sep,
+            "required_found": "brüt satış kolonları",
+            "missing_required": "",
+            "notes": "Aylık brüt satış dosyası olarak tanındı.",
+        }
+
+    if "billing" in name_norm or "fatura" in name_norm:
+        return {
+            "file": path.name,
+            "detected_type": "billing",
+            "status": "OK",
+            "rows": len(df),
+            "cols": len(df.columns),
+            "encoding": enc,
+            "separator": sep,
+            "required_found": "billing/fatura",
+            "missing_required": "",
+            "notes": "Meta fatura/billing dosyası olarak tanındı.",
+        }
+
+    if "meta" in name_norm or "campaign" in name_norm or has_any(META_HINTS):
+        return {
+            "file": path.name,
+            "detected_type": "meta_campaign",
+            "status": "OK",
+            "rows": len(df),
+            "cols": len(df.columns),
+            "encoding": enc,
+            "separator": sep,
+            "required_found": "meta/kampanya kolonları",
+            "missing_required": "",
+            "notes": "Meta campaign/performance dosyası olarak tanındı.",
+        }
+
+    return {
+        "file": path.name,
+        "detected_type": "other",
+        "status": "WARNING",
+        "rows": len(df),
+        "cols": len(df.columns),
+        "encoding": enc,
+        "separator": sep,
+        "required_found": "",
+        "missing_required": "",
+        "notes": "Tanımlı dosya türlerinden biri olarak algılanmadı.",
     }
 
-    for path in files:
-        name = normalize_text(path.name)
 
-        if "maliyet" in name:
-            groups["costs"].append(path)
-        elif "shopify002" in name or "oturumlar" in name:
-            groups["funnel"].append(path)
-        elif "shopify003" in name:
-            groups["geo"].append(path)
-        elif "shopify004" in name:
-            groups["gross_monthly"].append(path)
-        elif "meta" in name or "campaign" in name:
-            groups["meta"].append(path)
-        elif "billing" in name or "fatura" in name:
-            groups["billing"].append(path)
-        elif is_shopify_order_file(path):
-            groups["orders"].append(path)
-        else:
-            groups["other"].append(path)
+@st.cache_data(show_spinner=False)
+def scan_files() -> pd.DataFrame:
+    rows = []
+    for path in sorted(DATA_DIR.glob("*.csv")):
+        rows.append(detect_file_type(path))
 
-    return groups
+    if not rows:
+        return pd.DataFrame(columns=[
+            "file", "detected_type", "status", "rows", "cols", "encoding", "separator",
+            "required_found", "missing_required", "notes"
+        ])
+    return pd.DataFrame(rows)
+
+
+def files_by_type(scan: pd.DataFrame, file_type: str) -> list[Path]:
+    if scan.empty:
+        return []
+    names = scan.loc[scan["detected_type"].eq(file_type) & scan["status"].isin(["OK", "WARNING"]), "file"].tolist()
+    return [DATA_DIR / name for name in names]
 
 
 # =========================================================
 # LOADERS
 # =========================================================
 @st.cache_data(show_spinner=False)
-def load_costs() -> pd.DataFrame:
-    groups = classify_files()
-    if not groups["costs"]:
-        return pd.DataFrame(columns=["sku_key", "commission_rate", "unit_cost", "unit_ship", "vat_rate"])
+def load_costs(scan: pd.DataFrame) -> pd.DataFrame:
+    files = files_by_type(scan, "costs")
+    if not files:
+        return pd.DataFrame(columns=["sku_key", "unit_cost", "commission_rate", "unit_ship", "vat_rate"])
 
-    path = groups["costs"][0]
-    df = read_csv_flexible(path)
+    df, _, _ = read_csv_flexible(files[0])
     if df.empty:
-        return pd.DataFrame(columns=["sku_key", "commission_rate", "unit_cost", "unit_ship", "vat_rate"])
+        return pd.DataFrame(columns=["sku_key", "unit_cost", "commission_rate", "unit_ship", "vat_rate"])
 
     sku_col = find_col(df, ["SKU"])
-    comm_col = find_col(df, ["Komisyon oran", "Komisyon", "Commission"])
     cost_col = find_col(df, ["Maliyet", "Cost"])
+    comm_col = find_col(df, ["Komisyon oran", "Komisyon", "Commission"])
     ship_col = find_col(df, ["Kargo", "Shipping"])
     vat_col = find_col(df, ["KDV", "VAT"])
 
     if not sku_col:
-        return pd.DataFrame(columns=["sku_key", "commission_rate", "unit_cost", "unit_ship", "vat_rate"])
+        return pd.DataFrame(columns=["sku_key", "unit_cost", "commission_rate", "unit_ship", "vat_rate"])
 
     out = pd.DataFrame({
         "sku_key": df[sku_col].apply(clean_sku),
-        "commission_rate": df[comm_col].apply(to_float) if comm_col else 0.0,
         "unit_cost": df[cost_col].apply(to_float) if cost_col else 0.0,
+        "commission_rate": df[comm_col].apply(to_float) if comm_col else 0.0,
         "unit_ship": df[ship_col].apply(to_float) if ship_col else 0.0,
         "vat_rate": df[vat_col].apply(to_float) if vat_col else 0.0,
     })
-
-    # Komisyon 1'den büyükse yüzde gibi gelmiştir: 10 -> 0.10
     out["commission_rate"] = out["commission_rate"].apply(lambda x: x / 100 if x > 1 else x)
-
     out = out[out["sku_key"] != ""].drop_duplicates("sku_key", keep="last")
     return out
 
 
 @st.cache_data(show_spinner=False)
-def load_orders_and_lines() -> tuple[pd.DataFrame, pd.DataFrame, list[dict]]:
-    groups = classify_files()
-    order_files = groups["orders"]
-    debug = []
-
-    if not order_files:
-        return pd.DataFrame(), pd.DataFrame(), debug
-
+def load_orders_and_lines(scan: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    files = files_by_type(scan, "orders")
+    debug_rows = []
     frames = []
 
-    for path in order_files:
-        df = read_shopify_order_csv_robust(path)
-        debug.append({"file": path.name, "type": "order", "rows": len(df), "cols": len(df.columns)})
-
-        if df.empty:
+    for path in files:
+        df, enc = read_shopify_order_csv_robust(path)
+        debug_rows.append({
+            "file": path.name,
+            "encoding": enc,
+            "rows_loaded": len(df),
+            "columns_loaded": len(df.columns),
+            "has_required_columns": set(ORDER_REQUIRED).issubset(set(df.columns)) if not df.empty else False,
+        })
+        if df.empty or not set(ORDER_REQUIRED).issubset(set(df.columns)):
             continue
-
-        required_cols = {"Name", "Created at", "Lineitem name"}
-        if not required_cols.issubset(set(df.columns)):
-            continue
-
         df["source_file"] = path.name
         frames.append(df)
 
+    debug_df = pd.DataFrame(debug_rows)
+
     if not frames:
-        return pd.DataFrame(), pd.DataFrame(), debug
+        return pd.DataFrame(), pd.DataFrame(), debug_df
 
     raw = pd.concat(frames, ignore_index=True)
 
-    for col in [
-        "Total", "Subtotal", "Shipping", "Taxes", "Discount Amount", "Refunded Amount",
-        "Lineitem quantity", "Lineitem price", "Lineitem discount"
-    ]:
-        if col in raw.columns:
-            raw[col] = raw[col].apply(to_float)
-        else:
+    needed_numeric = [
+        "Total", "Subtotal", "Shipping", "Taxes", "Discount Amount",
+        "Refunded Amount", "Lineitem quantity", "Lineitem price", "Lineitem discount"
+    ]
+    for col in needed_numeric:
+        if col not in raw.columns:
             raw[col] = 0.0
+        raw[col] = raw[col].apply(to_float)
+
+    if "Paid at" not in raw.columns:
+        raw["Paid at"] = ""
+    if "Cancelled at" not in raw.columns:
+        raw["Cancelled at"] = ""
+    if "Financial Status" not in raw.columns:
+        raw["Financial Status"] = ""
+    if "Fulfillment Status" not in raw.columns:
+        raw["Fulfillment Status"] = ""
+    if "Currency" not in raw.columns:
+        raw["Currency"] = ""
+    if "Payment Method" not in raw.columns:
+        raw["Payment Method"] = ""
+    if "Billing City" not in raw.columns:
+        raw["Billing City"] = ""
+    if "Source" not in raw.columns:
+        raw["Source"] = ""
+    if "Lineitem sku" not in raw.columns:
+        raw["Lineitem sku"] = ""
 
     raw["order_date"] = pd.to_datetime(raw["Created at"], errors="coerce", utc=True).dt.tz_localize(None)
-    raw["paid_at"] = pd.to_datetime(raw.get("Paid at", ""), errors="coerce", utc=True).dt.tz_localize(None)
-    raw["cancelled_at"] = pd.to_datetime(raw.get("Cancelled at", ""), errors="coerce", utc=True).dt.tz_localize(None)
-    raw["order_name"] = raw["Name"].astype(str)
-    raw["financial_status"] = raw.get("Financial Status", "").fillna("").astype(str).str.lower()
-    raw["fulfillment_status"] = raw.get("Fulfillment Status", "").fillna("").astype(str).str.lower()
+    raw["paid_at"] = pd.to_datetime(raw["Paid at"], errors="coerce", utc=True).dt.tz_localize(None)
+    raw["cancelled_at"] = pd.to_datetime(raw["Cancelled at"], errors="coerce", utc=True).dt.tz_localize(None)
+    raw["order_name"] = raw["Name"].fillna("").astype(str)
+    raw["financial_status"] = raw["Financial Status"].fillna("").astype(str).str.lower()
+    raw["fulfillment_status"] = raw["Fulfillment Status"].fillna("").astype(str).str.lower()
 
-    # Sadece dolu order name satırları.
-    raw = raw[raw["order_name"].fillna("").astype(str).str.strip() != ""].copy()
+    raw = raw[raw["order_name"].str.strip() != ""].copy()
 
     dedupe_cols = [c for c in [
         "Name", "Created at", "Lineitem name", "Lineitem sku",
         "Lineitem quantity", "Lineitem price", "Financial Status",
-        "Fulfillment Status", "Total", "Discount Amount", "source_file"
+        "Fulfillment Status", "Total", "Discount Amount"
     ] if c in raw.columns]
     raw = raw.drop_duplicates(subset=dedupe_cols, keep="first")
 
@@ -443,14 +516,13 @@ def load_orders_and_lines() -> tuple[pd.DataFrame, pd.DataFrame, list[dict]]:
     }).reset_index()
 
     orders["is_cancelled"] = orders["cancelled_at"].notna() | orders["financial_status"].isin(["voided", "void", "cancelled", "canceled"])
-    orders["net_sales"] = orders["Total"].fillna(0) - orders["Refunded Amount"].fillna(0)
+    orders["net_sales"] = orders["Total"].fillna(0.0) - orders["Refunded Amount"].fillna(0.0)
     orders.loc[orders["is_cancelled"], "net_sales"] = 0.0
     orders["order_count"] = (~orders["is_cancelled"]).astype(int)
 
     lines = raw.copy()
     lines["product_name"] = lines["Lineitem name"].fillna("").astype(str)
-    lines["product_name_norm"] = lines["product_name"].apply(normalize_text)
-    lines["sku_key"] = lines.get("Lineitem sku", "").apply(clean_sku)
+    lines["sku_key"] = lines["Lineitem sku"].apply(clean_sku)
     lines["qty"] = lines["Lineitem quantity"].apply(to_float)
     lines["line_price"] = lines["Lineitem price"].apply(to_float)
     lines["line_discount"] = lines["Lineitem discount"].apply(to_float)
@@ -458,30 +530,29 @@ def load_orders_and_lines() -> tuple[pd.DataFrame, pd.DataFrame, list[dict]]:
     lines["is_cancelled"] = lines["cancelled_at"].notna() | lines["financial_status"].isin(["voided", "void", "cancelled", "canceled"])
     lines.loc[lines["is_cancelled"], ["qty", "line_revenue"]] = 0.0
 
-    keep = [
+    lines = lines[[
         "order_name", "order_date", "financial_status", "fulfillment_status",
-        "sku_key", "product_name", "product_name_norm", "qty", "line_revenue",
-        "is_cancelled", "source_file"
-    ]
-    return orders, lines[keep].copy(), debug
+        "sku_key", "product_name", "qty", "line_revenue", "is_cancelled", "source_file"
+    ]].copy()
+
+    return orders, lines, debug_df
 
 
 @st.cache_data(show_spinner=False)
-def load_funnel() -> pd.DataFrame:
-    groups = classify_files()
-    files = groups["funnel"]
+def load_funnel(scan: pd.DataFrame) -> pd.DataFrame:
+    files = files_by_type(scan, "funnel")
     if not files:
         return pd.DataFrame()
 
-    df = read_csv_flexible(files[0])
+    df, _, _ = read_csv_flexible(files[0])
     if df.empty:
         return pd.DataFrame()
 
-    month_col = find_col(df, ["Ay", "Month"])
+    month_col = find_col(df, ["Ay", "Month", "Tarih"])
     sessions_col = find_col(df, ["Oturumlar", "Sessions"])
     cart_col = find_col(df, ["Sepete ekleme", "Added to cart"])
     checkout_col = find_col(df, ["Ödeme sayfasına", "Checkout"])
-    purchase_col = find_col(df, ["Ödemeyi tamamlayan", "Completed checkout"])
+    completed_col = find_col(df, ["Ödemeyi tamamlayan", "Completed checkout"])
     conv_col = find_col(df, ["Dönüşüm oranı", "Conversion rate"])
 
     if not month_col:
@@ -492,20 +563,20 @@ def load_funnel() -> pd.DataFrame:
         "sessions": df[sessions_col].apply(to_float) if sessions_col else 0.0,
         "sessions_added_to_cart": df[cart_col].apply(to_float) if cart_col else 0.0,
         "sessions_reached_checkout": df[checkout_col].apply(to_float) if checkout_col else 0.0,
-        "sessions_completed_checkout": df[purchase_col].apply(to_float) if purchase_col else 0.0,
+        "sessions_completed_checkout": df[completed_col].apply(to_float) if completed_col else 0.0,
         "conversion_rate": df[conv_col].apply(to_float) if conv_col else 0.0,
     })
+
     return out.dropna(subset=["month"])
 
 
 @st.cache_data(show_spinner=False)
-def load_geo() -> pd.DataFrame:
-    groups = classify_files()
-    files = groups["geo"]
+def load_geo(scan: pd.DataFrame) -> pd.DataFrame:
+    files = files_by_type(scan, "geo")
     if not files:
         return pd.DataFrame()
 
-    df = read_csv_flexible(files[0])
+    df, _, _ = read_csv_flexible(files[0])
     if df.empty:
         return pd.DataFrame()
 
@@ -526,18 +597,17 @@ def load_geo() -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def load_gross_monthly() -> pd.DataFrame:
-    groups = classify_files()
-    files = groups["gross_monthly"]
+def load_gross_monthly(scan: pd.DataFrame) -> pd.DataFrame:
+    files = files_by_type(scan, "gross_monthly")
     if not files:
         return pd.DataFrame()
 
-    df = read_csv_flexible(files[0])
+    df, _, _ = read_csv_flexible(files[0])
     if df.empty:
         return pd.DataFrame()
 
-    month_col = find_col(df, ["Ay", "Month"])
-    gross_col = find_col(df, ["Brüt satışlar", "Gross sales"])
+    month_col = find_col(df, ["Ay", "Month", "Tarih"])
+    gross_col = find_col(df, ["Brüt satışlar", "Brut satislar", "Gross sales"])
 
     if not month_col or not gross_col:
         return pd.DataFrame()
@@ -549,146 +619,33 @@ def load_gross_monthly() -> pd.DataFrame:
     return out.dropna(subset=["month"])
 
 
-
-def parse_meta_billing_report(path: Path) -> pd.DataFrame:
-    """
-    Meta Fatura Özeti dosyaları normal CSV gibi başlamaz.
-    Dosyada 'Meta Reklamları Ödemesi' bölümünü bulur ve sadece ödeme satırlarını okur.
-    """
-    raw_text = ""
-    for enc in ["utf-8-sig", "utf-8", "iso-8859-9", "cp1254", "latin1"]:
-        try:
-            raw_text = path.read_text(encoding=enc)
-            if raw_text:
-                break
-        except Exception:
-            continue
-
-    if not raw_text:
-        return pd.DataFrame()
-
-    marker_candidates = [
-        "Meta Reklamları Ödemesi",
-        "Meta Reklamlari Odemesi",
-        "Meta Ads Payments",
-        "Meta Advertising Payments",
-    ]
-
-    start_idx = -1
-    for marker in marker_candidates:
-        start_idx = raw_text.find(marker)
-        if start_idx != -1:
-            break
-
-    if start_idx == -1:
-        return pd.DataFrame()
-
-    lines = raw_text[start_idx:].splitlines()
-    if len(lines) < 3:
-        return pd.DataFrame()
-
-    # Marker satırından sonraki satır header.
-    header_line = lines[1]
-    data_lines = []
-
-    for line in lines[2:]:
-        if not line.strip():
-            if data_lines:
-                break
-            continue
-        # Alt bölümlere gelirse dur.
-        if line.lower().startswith(("vat", "kdv", "toplam", "total")):
-            break
-        data_lines.append(line)
-
-    if not data_lines:
-        return pd.DataFrame()
-
-    rows = []
-    reader = csv.reader(data_lines)
-    for row in reader:
-        if len(row) < 4:
-            continue
-
-        date_raw = str(row[0]).strip()
-        amount_raw = row[3]
-
-        # Tarih formatı: 13.05.2026
-        date = pd.to_datetime(date_raw, format="%d.%m.%Y", errors="coerce")
-        if pd.isna(date):
-            date = pd.to_datetime(date_raw, errors="coerce")
-
-        spend = to_float(amount_raw)
-
-        if pd.notna(date) and spend > 0:
-            rows.append({
-                "date": date,
-                "campaign_name": "Meta Billing",
-                "spend": spend,
-                "attributed_revenue": 0.0,
-                "purchases": 0.0,
-                "source_file": path.name,
-                "source_type": "billing",
-                "campaign_spend_original": 0.0,
-            })
-
-    return pd.DataFrame(rows)
-
 @st.cache_data(show_spinner=False)
-def load_meta() -> pd.DataFrame:
-    """
-    Meta Spend çift saymayı engeller.
-
-    Billing/fatura dosyası varsa:
-    - Ana Total Ad Spend sadece billing dosyasından alınır.
-    - Campaign dosyasındaki spend ana spend'e eklenmez.
-    - Campaign dosyası sadece Total Ad Revenue, purchases ve campaign ROAS için kullanılır.
-
-    Billing yoksa:
-    - Campaign dosyasındaki spend ana spend olarak kullanılır.
-    """
-    groups = classify_files()
-
-    billing_files = groups["billing"]
-    campaign_files = groups["meta"]
+def load_meta(scan: pd.DataFrame) -> pd.DataFrame:
+    billing_files = files_by_type(scan, "billing")
+    campaign_files = files_by_type(scan, "meta_campaign")
 
     billing_rows = []
     campaign_rows = []
 
-    # 1) Billing / Fatura
+    # Billing: gerçek harcama kaynağı
     for path in billing_files:
-        parsed = parse_meta_billing_report(path)
-        if not parsed.empty:
-            billing_rows.append(parsed)
-            continue
-
-        # Fallback: normal tablo gibi okumayı dene.
-        df = read_csv_flexible(path)
+        df, _, _ = read_csv_flexible(path)
         if df.empty:
             continue
 
-        date_col = find_col(df, [
-            "Date", "Day", "Tarih", "Fatura Tarihi",
-            "Billing date", "Transaction date", "İşlem Tarihi", "Islem Tarihi"
-        ])
-        spend_col = find_col(df, [
-            "Amount", "Tutar", "Harcanan Tutar", "Spend", "Harcama",
-            "Total", "Toplam", "Ücret", "Ucret", "Paid", "Payment"
-        ])
-        desc_col = find_col(df, [
-            "Description", "Açıklama", "Aciklama", "Campaign", "Kampanya",
-            "Type", "İşlem Türü", "Islem Turu"
-        ])
+        date_col = find_col(df, ["Date", "Day", "Tarih", "Fatura Tarihi", "Billing date", "Transaction date"])
+        spend_col = find_col(df, ["Amount", "Tutar", "Harcanan Tutar", "Spend", "Harcama", "Total", "Toplam", "Paid", "Payment"])
+        desc_col = find_col(df, ["Description", "Açıklama", "Aciklama", "Campaign", "Kampanya", "Type"])
 
         if not spend_col:
-            possible_numeric_cols = []
+            # Son çare: toplamı pozitif en büyük sayısal kolonu seç
+            numeric_candidates = []
             for col in df.columns:
-                vals = df[col].apply(to_float)
-                total = vals.sum()
+                total = df[col].apply(to_float).sum()
                 if total > 0:
-                    possible_numeric_cols.append((total, col))
-            if possible_numeric_cols:
-                spend_col = sorted(possible_numeric_cols, reverse=True)[0][1]
+                    numeric_candidates.append((total, col))
+            if numeric_candidates:
+                spend_col = sorted(numeric_candidates, reverse=True)[0][1]
 
         if not spend_col:
             continue
@@ -704,53 +661,31 @@ def load_meta() -> pd.DataFrame:
             "campaign_spend_original": 0.0,
         })
         tmp = tmp[tmp["spend"] > 0].copy()
-        if not tmp.empty:
-            billing_rows.append(tmp)
+        billing_rows.append(tmp)
 
     billing_df = pd.concat(billing_rows, ignore_index=True) if billing_rows else pd.DataFrame()
 
-    # 2) Campaign / Performance
+    # Campaign: revenue/purchase/ROAS kaynağı
     for path in campaign_files:
-        df = read_csv_flexible(path)
+        df, _, _ = read_csv_flexible(path)
         if df.empty:
             continue
 
-        date_col = find_col(df, [
-            "Date", "Day", "Tarih",
-            "Reporting starts", "Reporting start",
-            "Rapor Başlangıcı", "Rapor Baslangici"
-        ])
-        campaign_col = find_col(df, [
-            "Campaign name", "Campaign", "Kampanya Adı", "Kampanya Adi", "Kampanya"
-        ])
-        spend_col = find_col(df, [
-            "Amount spent", "Amount spent (TRY)", "Harcanan Tutar",
-            "Harcanan Tutar (TRY)", "Spend", "Harcama", "Tutar"
-        ])
+        date_col = find_col(df, ["Date", "Day", "Tarih", "Reporting starts", "Rapor Başlangıcı", "Rapor Baslangici"])
+        campaign_col = find_col(df, ["Campaign name", "Campaign", "Kampanya Adı", "Kampanya Adi", "Kampanya"])
+        spend_col = find_col(df, ["Amount spent", "Harcanan Tutar", "Spend", "Harcama", "Tutar"])
         revenue_col = find_col(df, [
-            "Website purchases conversion value",
-            "Purchase conversion value",
-            "Purchases conversion value",
-            "Website purchase conversion value",
-            "Revenue", "Gelir", "Dönüşüm değeri", "Donusum degeri",
-            "Alışveriş dönüşüm değeri", "Alisveris donusum degeri"
+            "Website purchases conversion value", "Purchase conversion value", "Purchases conversion value",
+            "Revenue", "Gelir", "Dönüşüm değeri", "Donusum degeri", "Alışveriş dönüşüm değeri"
         ])
-        purchase_col = find_col(df, [
-            "Purchases", "Website purchases", "Satın almalar", "Satin almalar",
-            "Alışverişler", "Alisverisler", "Results", "Sonuçlar", "Sonuclar"
-        ])
-        roas_col = find_col(df, [
-            "Purchase ROAS", "Website purchase ROAS",
-            "Alışveriş Reklam Harcamasının Getirisi",
-            "Alisveris Reklam Harcamasinin Getirisi",
-            "ROAS"
-        ])
+        purchase_col = find_col(df, ["Purchases", "Website purchases", "Satın almalar", "Satin almalar", "Alışverişler", "Results"])
+        roas_col = find_col(df, ["Purchase ROAS", "Website purchase ROAS", "ROAS", "Alışveriş Reklam Harcamasının Getirisi"])
 
         if not spend_col:
             continue
 
         spend_series = df[spend_col].apply(to_float)
-        purchases_series = df[purchase_col].apply(to_float) if purchase_col else pd.Series([0.0] * len(df))
+        purchase_series = df[purchase_col].apply(to_float) if purchase_col else pd.Series([0.0] * len(df))
 
         if revenue_col:
             revenue_series = df[revenue_col].apply(to_float)
@@ -764,65 +699,43 @@ def load_meta() -> pd.DataFrame:
             "campaign_name": df[campaign_col].astype(str) if campaign_col else path.stem,
             "campaign_spend_original": spend_series,
             "attributed_revenue": revenue_series,
-            "purchases": purchases_series,
+            "purchases": purchase_series,
             "source_file": path.name,
             "source_type": "campaign",
         })
-
         campaign_rows.append(tmp)
 
     campaign_df = pd.concat(campaign_rows, ignore_index=True) if campaign_rows else pd.DataFrame()
 
+    # Double count önleme:
     if not billing_df.empty:
         if not campaign_df.empty:
             campaign_df["spend"] = 0.0
             campaign_df = campaign_df[[
-                "date",
-                "campaign_name",
-                "spend",
-                "attributed_revenue",
-                "purchases",
-                "source_file",
-                "source_type",
-                "campaign_spend_original",
+                "date", "campaign_name", "spend", "attributed_revenue", "purchases",
+                "source_file", "source_type", "campaign_spend_original"
             ]]
-
         final = pd.concat([billing_df, campaign_df], ignore_index=True) if not campaign_df.empty else billing_df.copy()
-
     else:
         if not campaign_df.empty:
             campaign_df["spend"] = campaign_df["campaign_spend_original"]
             final = campaign_df[[
-                "date",
-                "campaign_name",
-                "spend",
-                "attributed_revenue",
-                "purchases",
-                "source_file",
-                "source_type",
-                "campaign_spend_original",
+                "date", "campaign_name", "spend", "attributed_revenue", "purchases",
+                "source_file", "source_type", "campaign_spend_original"
             ]].copy()
         else:
             final = pd.DataFrame(columns=[
-                "date",
-                "campaign_name",
-                "spend",
-                "attributed_revenue",
-                "purchases",
-                "source_file",
-                "source_type",
-                "campaign_spend_original",
+                "date", "campaign_name", "spend", "attributed_revenue", "purchases",
+                "source_file", "source_type", "campaign_spend_original"
             ])
 
     if final.empty:
         return final
 
-    final["date"] = pd.to_datetime(final["date"], errors="coerce")
-    final["spend"] = final["spend"].fillna(0.0)
-    final["attributed_revenue"] = final["attributed_revenue"].fillna(0.0)
-    final["purchases"] = final["purchases"].fillna(0.0)
-    final["campaign_spend_original"] = final["campaign_spend_original"].fillna(0.0)
+    for col in ["spend", "attributed_revenue", "purchases", "campaign_spend_original"]:
+        final[col] = final[col].fillna(0.0)
 
+    final["date"] = pd.to_datetime(final["date"], errors="coerce")
     return final
 
 
@@ -831,54 +744,55 @@ def load_meta() -> pd.DataFrame:
 # =========================================================
 @st.cache_data(show_spinner=False)
 def build_model():
-    costs = load_costs()
-    orders, lines, order_debug = load_orders_and_lines()
-    funnel = load_funnel()
-    geo = load_geo()
-    gross_monthly = load_gross_monthly()
-    meta = load_meta()
-    groups = classify_files()
+    scan = scan_files()
+    costs = load_costs(scan)
+    orders, lines, order_debug = load_orders_and_lines(scan)
+    funnel = load_funnel(scan)
+    geo = load_geo(scan)
+    gross_monthly = load_gross_monthly(scan)
+    meta = load_meta(scan)
 
     issues = []
 
+    if scan.empty:
+        issues.append("Shopify_app klasöründe hiç CSV dosyası bulunamadı.")
     if orders.empty:
-        issues.append("Shopify sipariş dosyası okunamadı. Shopify export dosyasında Name, Created at ve Lineitem name kolonları olmalı.")
+        issues.append("Sipariş dosyası okunamadı. Sipariş dosyasında Name, Created at ve Lineitem name kolonları olmalı.")
     if costs.empty:
-        issues.append("Shopify maliyet tablosu okunamadı veya SKU kolonu bulunamadı.")
+        issues.append("Maliyet tablosu okunamadı. Maliyet dosyasında SKU kolonu olmalı.")
     if funnel.empty:
-        issues.append("shopify002.csv funnel dosyası okunamadı.")
+        issues.append("Funnel dosyası okunamadı. shopify002.csv veya oturum kolonları bekleniyor.")
     if geo.empty:
-        issues.append("shopify003.csv şehir/bölge dosyası okunamadı.")
+        issues.append("Geo dosyası okunamadı. shopify003.csv veya şehir/bölge kolonları bekleniyor.")
     if gross_monthly.empty:
-        issues.append("shopify004.csv aylık brüt satış dosyası okunamadı.")
+        issues.append("Brüt satış dosyası okunamadı. shopify004.csv veya Brüt satışlar kolonu bekleniyor.")
     if meta.empty:
-        issues.append("Meta reklam/fatura dosyası okunamadı veya harcama kolonu bulunamadı.")
+        issues.append("Meta/fatura dosyası okunamadı. Harcama kolonu bulunmalı.")
 
     if not lines.empty:
         lines = lines.merge(costs, on="sku_key", how="left")
-        lines["unit_cost"] = lines["unit_cost"].fillna(0.0)
-        lines["unit_ship"] = lines["unit_ship"].fillna(0.0)
-        lines["commission_rate"] = lines["commission_rate"].fillna(0.0)
+        for col in ["unit_cost", "unit_ship", "commission_rate"]:
+            lines[col] = lines[col].fillna(0.0)
         lines["matched_cost"] = lines["unit_cost"].gt(0)
         lines["estimated_cost_total"] = (lines["unit_cost"] + lines["unit_ship"]) * lines["qty"]
         lines["estimated_commission_total"] = lines["line_revenue"] * lines["commission_rate"]
         lines["gross_profit"] = lines["line_revenue"] - lines["estimated_cost_total"] - lines["estimated_commission_total"]
-        lines["inventory_key"] = lines["product_name"].apply(inventory_key_for_product)
-        lines["stock_units"] = lines["inventory_key"].map(MANUAL_INVENTORY)
     else:
-        lines["gross_profit"] = []
         lines["matched_cost"] = []
-        lines["inventory_key"] = []
-        lines["stock_units"] = []
+        lines["gross_profit"] = []
 
     if not orders.empty and not lines.empty:
         profit = lines.groupby("order_name", as_index=False).agg(gross_profit_estimated=("gross_profit", "sum"))
-        orders = orders.merge(profit, on="order_name", how="left")
+        units = lines.groupby("order_name", as_index=False).agg(units=("qty", "sum"))
+        orders = orders.merge(profit, on="order_name", how="left").merge(units, on="order_name", how="left")
         orders["gross_profit_estimated"] = orders["gross_profit_estimated"].fillna(0.0)
+        orders["units"] = orders["units"].fillna(0.0)
     elif not orders.empty:
         orders["gross_profit_estimated"] = orders["net_sales"] * 0.45
+        orders["units"] = 0.0
 
     return {
+        "scan": scan,
         "costs": costs,
         "orders": orders,
         "lines": lines,
@@ -886,36 +800,35 @@ def build_model():
         "geo": geo,
         "gross_monthly": gross_monthly,
         "meta": meta,
-        "groups": groups,
-        "issues": issues,
         "order_debug": order_debug,
+        "issues": issues,
     }
 
 
 model = build_model()
-
+scan = model["scan"]
+costs = model["costs"]
 orders = model["orders"]
 lines = model["lines"]
 funnel = model["funnel"]
 geo = model["geo"]
 gross_monthly = model["gross_monthly"]
 meta = model["meta"]
-groups = model["groups"]
-issues = model["issues"]
 order_debug = model["order_debug"]
+issues = model["issues"]
 
 
 # =========================================================
 # FILTERS
 # =========================================================
-date_values = []
+date_series = []
 if not orders.empty and "order_date" in orders.columns:
-    date_values.append(pd.to_datetime(orders["order_date"], errors="coerce").dropna())
+    date_series.append(pd.to_datetime(orders["order_date"], errors="coerce").dropna())
 if not meta.empty and "date" in meta.columns:
-    date_values.append(pd.to_datetime(meta["date"], errors="coerce").dropna())
+    date_series.append(pd.to_datetime(meta["date"], errors="coerce").dropna())
 
-if date_values and any(len(x) for x in date_values):
-    all_dates = pd.concat([x for x in date_values if len(x)], ignore_index=True)
+if date_series and any(len(s) for s in date_series):
+    all_dates = pd.concat([s for s in date_series if len(s)], ignore_index=True)
     min_date = all_dates.min().date()
     max_date = all_dates.max().date()
 else:
@@ -926,29 +839,31 @@ with st.sidebar:
     all_time = st.toggle("All Time", value=True)
     start_date = st.date_input("Start date", value=min_date, min_value=min_date, max_value=max_date, disabled=all_time)
     end_date = st.date_input("End date", value=max_date, min_value=min_date, max_value=max_date, disabled=all_time)
+    inventory_default = st.number_input("Manual total inventory units", min_value=0, value=0, step=1)
     low_stock_threshold = st.number_input("Low stock threshold", min_value=0, value=20, step=1)
-    show_debug = st.checkbox("Dosya okuma debug göster", value=True)
+    show_diagnostic_top = st.checkbox("Dosya tanıma tablosunu üstte göster", value=True)
 
 
-def filter_df_by_date(df: pd.DataFrame, date_col: str):
-    if df.empty or all_time or date_col not in df.columns:
+def filter_by_date(df: pd.DataFrame, col: str) -> pd.DataFrame:
+    if df.empty or all_time or col not in df.columns:
         return df.copy()
     s = pd.Timestamp(min(start_date, end_date))
     e = pd.Timestamp(max(start_date, end_date)) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-    d = pd.to_datetime(df[date_col], errors="coerce")
-    return df[(d >= s) & (d <= e)].copy()
+    parsed = pd.to_datetime(df[col], errors="coerce")
+    return df[(parsed >= s) & (parsed <= e)].copy()
 
 
-orders_f = filter_df_by_date(orders, "order_date")
-lines_f = filter_df_by_date(lines, "order_date")
-meta_f = filter_df_by_date(meta, "date")
+orders_f = filter_by_date(orders, "order_date")
+lines_f = filter_by_date(lines, "order_date")
+meta_f = filter_by_date(meta, "date")
+
 
 # =========================================================
-# KPI
+# KPI MODEL
 # =========================================================
 total_revenue = float(orders_f["net_sales"].sum()) if not orders_f.empty else 0.0
-order_count = int(orders_f["order_count"].sum()) if not orders_f.empty and "order_count" in orders_f.columns else int(orders_f["order_name"].nunique()) if not orders_f.empty else 0
-units_sold = float(lines_f["qty"].sum()) if not lines_f.empty and "qty" in lines_f.columns else 0.0
+order_count = int(orders_f["order_count"].sum()) if not orders_f.empty and "order_count" in orders_f.columns else 0
+units_sold = float(lines_f["qty"].sum()) if not lines_f.empty else float(orders_f["units"].sum()) if not orders_f.empty and "units" in orders_f.columns else 0.0
 aov = safe_divide(total_revenue, order_count)
 
 gross_profit_before_ads = (
@@ -960,112 +875,117 @@ gross_profit_before_ads = (
 
 total_ad_spend = float(meta_f["spend"].sum()) if not meta_f.empty else 0.0
 total_ad_revenue = float(meta_f["attributed_revenue"].sum()) if not meta_f.empty else 0.0
-total_ad_purchases = float(meta_f["purchases"].sum()) if not meta_f.empty else 0.0
-
-net_profit_after_ads = gross_profit_before_ads - total_ad_spend
+ad_purchases = float(meta_f["purchases"].sum()) if not meta_f.empty else 0.0
 roas = safe_divide(total_ad_revenue, total_ad_spend)
+net_profit_after_ads = gross_profit_before_ads - total_ad_spend
 mer = safe_divide(total_revenue, total_ad_spend)
 
-if not lines_f.empty and "inventory_key" in lines_f.columns:
-    inventory_items = (
-        lines_f[["inventory_key", "stock_units"]]
-        .dropna(subset=["inventory_key"])
-        .query("inventory_key != ''")
-        .drop_duplicates("inventory_key")
-    )
-else:
-    inventory_items = pd.DataFrame(columns=["inventory_key", "stock_units"])
+tracked_inventory_items = int(costs["sku_key"].nunique()) if not costs.empty else 0
+total_inventory_units = inventory_default
+low_stock_items = 0  # Gerçek stok dosyası yoksa manuel stok girişi olmadan hesaplanamaz.
 
-total_inventory_units = float(inventory_items["stock_units"].fillna(0).sum()) if not inventory_items.empty else 0.0
-tracked_inventory_items = int(inventory_items["inventory_key"].nunique()) if not inventory_items.empty else 0
-low_stock_items = int(inventory_items["stock_units"].fillna(0).le(low_stock_threshold).sum()) if not inventory_items.empty else 0
+cost_match_rate = float(lines_f["matched_cost"].mean()) if not lines_f.empty and "matched_cost" in lines_f.columns else 0.0
 
 
 # =========================================================
-# MAIN REPORT CARDS
+# UI - KPI CARDS
 # =========================================================
-st.subheader("Shopify Main Report")
+if show_diagnostic_top:
+    with st.expander("📁 Dosya Tanıma Sistemi", expanded=orders.empty):
+        st.write(f"Okunan klasör: `{DATA_DIR}`")
+        if scan.empty:
+            st.warning("Bu klasörde CSV dosyası bulunamadı.")
+        else:
+            st.dataframe(scan, use_container_width=True, hide_index=True)
+
+        if issues:
+            st.markdown("#### Uyarılar")
+            for issue in issues:
+                st.info(issue)
+
+st.subheader("Main Report")
 
 r1c1, r1c2, r1c3, r1c4 = st.columns(4)
-r1c1.metric("Total Revenue", f"{total_revenue:,.2f} TL")
+r1c1.metric("Total Revenue", money(total_revenue))
 r1c2.metric("Order Count", f"{order_count:,}")
 r1c3.metric("Units Sold", f"{units_sold:,.0f}")
-r1c4.metric("AOV", f"{aov:,.2f} TL")
+r1c4.metric("AOV", money(aov))
 
 r2c1, r2c2, r2c3, r2c4 = st.columns(4)
-r2c1.metric("Total Ad Revenue", f"{total_ad_revenue:,.2f} TL")
-r2c2.metric("ROAS", f"{roas:,.2f}" if roas else "N/A")
-r2c3.metric("Gross Profit Before Ads", f"{gross_profit_before_ads:,.2f} TL")
-r2c4.metric("Total Ad Spend", f"{total_ad_spend:,.2f} TL")
+r2c1.metric("Total Ad Revenue", money(total_ad_revenue))
+r2c2.metric("ROAS", f"{roas:.2f}" if roas else "N/A")
+r2c3.metric("Gross Profit Before Ads", money(gross_profit_before_ads))
+r2c4.metric("Total Ad Spend", money(total_ad_spend))
 
 r3c1, r3c2, r3c3, r3c4 = st.columns(4)
-r3c1.metric("Net Profit After Ads", f"{net_profit_after_ads:,.2f} TL")
-r3c2.metric("MER", f"{mer:,.2f}" if mer else "N/A")
+r3c1.metric("Net Profit After Ads", money(net_profit_after_ads))
+r3c2.metric("MER", f"{mer:.2f}" if mer else "N/A")
 r3c3.metric("Total Inventory Units", f"{total_inventory_units:,.0f}")
 r3c4.metric("Tracked Inventory Items", f"{tracked_inventory_items:,}")
 
 r4c1, r4c2, r4c3, r4c4 = st.columns(4)
 r4c1.metric("Low Stock Items", f"{low_stock_items:,}")
-r4c2.metric("Ad Purchases", f"{total_ad_purchases:,.0f}")
-r4c3.metric("Cost Match Rate", f"{(lines_f['matched_cost'].mean() * 100):,.1f}%" if not lines_f.empty and "matched_cost" in lines_f.columns else "N/A")
+r4c2.metric("Ad Purchases", f"{ad_purchases:,.0f}")
+r4c3.metric("Cost Match Rate", f"{cost_match_rate:.1%}")
 r4c4.metric("Report Period", "All Time" if all_time else f"{start_date} → {end_date}")
 
-# Eski değişken isimleri, tablarda uyumluluk için:
-total_sales = total_revenue
-total_orders = order_count
-gross_profit = gross_profit_before_ads
-meta_spend = total_ad_spend
-meta_revenue = total_ad_revenue
-meta_purchases = total_ad_purchases
 
-if issues:
-    with st.expander("Okuma uyarıları", expanded=orders.empty):
-        for msg in issues:
-            st.info(msg)
-
-if show_debug:
-    with st.expander("Dosya okuma debug", expanded=orders.empty):
-        rows = []
-        for group_name, paths in groups.items():
-            for p in paths:
-                rows.append({"group": group_name, "file": p.name})
-        st.write("DATA_DIR:")
-        st.code(str(DATA_DIR))
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-        if order_debug:
-            st.write("Order parser debug")
-            st.dataframe(pd.DataFrame(order_debug), use_container_width=True, hide_index=True)
-        if not meta.empty:
-            st.write("Meta source debug")
-            debug_cols = [c for c in ["source_file", "source_type", "spend", "campaign_spend_original", "attributed_revenue", "purchases"] if c in meta.columns]
-            st.dataframe(meta[debug_cols].groupby(["source_file", "source_type"], as_index=False).sum(numeric_only=True), use_container_width=True, hide_index=True)
-
-
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "Sales Performance",
-    "Products & Inventory",
-    "Traffic & Funnel",
-    "Marketing",
-    "Orders",
-    "Data Quality",
+# =========================================================
+# TABS
+# =========================================================
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    "📁 File Diagnostic",
+    "📊 Sales Performance",
+    "📦 Product & Profit",
+    "🧭 Traffic & Funnel",
+    "📣 Meta / Marketing",
+    "🧾 Orders",
+    "🧪 Data Quality",
 ])
 
 with tab1:
-    st.subheader("Daily Sales and Profit")
-    if orders_f.empty:
-        st.warning("Shopify sipariş verisi bulunamadı veya okunamadı.")
+    st.subheader("Dosya Tanıma ve Hata Gösterme")
+    st.write("Bu tablo, Shopify_app klasöründeki her CSV dosyasını hangi tür olarak algıladığını gösterir.")
+    if scan.empty:
+        st.warning("CSV dosyası yok.")
     else:
-        daily = orders_f.groupby(orders_f["order_date"].dt.normalize(), as_index=False).agg({
-            "net_sales": "sum",
-            "order_count": "sum",
-            "gross_profit_estimated": "sum",
-        }).rename(columns={"order_date": "date"})
+        st.dataframe(scan, use_container_width=True, hide_index=True)
+
+    st.markdown("### Order Parser Debug")
+    if order_debug.empty:
+        st.info("Sipariş parser debug verisi yok.")
+    else:
+        st.dataframe(order_debug, use_container_width=True, hide_index=True)
+
+    st.markdown("### Beklenen dosya türleri")
+    expected = pd.DataFrame([
+        {"Tür": "orders", "Gerekli kolonlar": "Name, Created at, Lineitem name", "Örnek": "orders_export_1.csv / Shopify11.05.csv"},
+        {"Tür": "costs", "Gerekli kolonlar": "SKU, Maliyet, Komisyon, Kargo", "Örnek": "Shopify Maliyet Tablosu(Sayfa1).csv"},
+        {"Tür": "funnel", "Gerekli kolonlar": "Oturumlar, Sepete ekleme, Ödeme sayfası", "Örnek": "shopify002.csv"},
+        {"Tür": "geo", "Gerekli kolonlar": "Oturum ülkesi/bölgesi/şehri", "Örnek": "shopify003.csv"},
+        {"Tür": "gross_monthly", "Gerekli kolonlar": "Ay, Brüt satışlar", "Örnek": "shopify004.csv"},
+        {"Tür": "billing", "Gerekli kolonlar": "Tutar/Amount/Payment", "Örnek": "meta_billing_2026...csv"},
+        {"Tür": "meta_campaign", "Gerekli kolonlar": "Campaign, Amount spent, Purchases/ROAS", "Örnek": "meta_campaigns_2026...csv"},
+    ])
+    st.dataframe(expected, use_container_width=True, hide_index=True)
+
+with tab2:
+    st.subheader("Sales Performance")
+    if orders_f.empty:
+        st.warning("Sipariş verisi boş. File Diagnostic sekmesinden dosya türünü ve eksik kolonları kontrol et.")
+    else:
+        daily = orders_f.groupby(orders_f["order_date"].dt.normalize(), as_index=False).agg(
+            net_sales=("net_sales", "sum"),
+            order_count=("order_count", "sum"),
+            gross_profit_estimated=("gross_profit_estimated", "sum"),
+        ).rename(columns={"order_date": "date"})
+
         if not meta_f.empty:
-            meta_daily = meta_f.groupby(meta_f["date"].dt.normalize(), as_index=False).agg({
-                "spend": "sum",
-                "attributed_revenue": "sum",
-                "purchases": "sum",
-            }).rename(columns={"date": "date"})
+            meta_daily = meta_f.groupby(meta_f["date"].dt.normalize(), as_index=False).agg(
+                spend=("spend", "sum"),
+                attributed_revenue=("attributed_revenue", "sum"),
+                purchases=("purchases", "sum"),
+            ).rename(columns={"date": "date"})
             daily = daily.merge(meta_daily, on="date", how="outer").fillna(0.0)
         else:
             daily["spend"] = 0.0
@@ -1073,51 +993,53 @@ with tab1:
             daily["purchases"] = 0.0
 
         daily["net_profit_after_ads"] = daily["gross_profit_estimated"] - daily["spend"]
-        chart_df = daily.melt(
+
+        chart = daily.melt(
             id_vars="date",
             value_vars=["net_sales", "gross_profit_estimated", "net_profit_after_ads"],
             var_name="metric",
             value_name="value",
         )
-        fig = px.line(chart_df, x="date", y="value", color="metric", markers=True)
+        fig = px.line(chart, x="date", y="value", color="metric", markers=True)
         st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(daily.sort_values("date", ascending=False), use_container_width=True)
+        st.dataframe(daily.sort_values("date", ascending=False), use_container_width=True, hide_index=True)
 
     if not gross_monthly.empty:
-        st.subheader("Shopify Gross Sales Export")
-        fig2 = px.line(gross_monthly.sort_values("month"), x="month", y="gross_sales", markers=True)
-        st.plotly_chart(fig2, use_container_width=True)
+        st.subheader("Gross Monthly Export")
+        fig = px.line(gross_monthly.sort_values("month"), x="month", y="gross_sales", markers=True)
+        st.plotly_chart(fig, use_container_width=True)
         st.dataframe(gross_monthly, use_container_width=True, hide_index=True)
 
-with tab2:
-    st.subheader("Product Profitability")
+with tab3:
+    st.subheader("Product & Profit")
     if lines_f.empty:
-        st.info("Ürün satır verisi bulunamadı.")
+        st.warning("Ürün satır verisi boş.")
     else:
-        product = lines_f.groupby("product_name", as_index=False).agg(
-            qty_sold=("qty", "sum"),
+        product = lines_f.groupby(["product_name", "sku_key"], as_index=False).agg(
+            units_sold=("qty", "sum"),
             revenue=("line_revenue", "sum"),
             gross_profit=("gross_profit", "sum"),
-            matched_cost_rate=("matched_cost", "mean"),
-        ).sort_values(["qty_sold", "revenue"], ascending=False)
+            matched_cost=("matched_cost", "max"),
+            source_file=("source_file", "last"),
+        ).sort_values(["units_sold", "revenue"], ascending=False)
 
         st.dataframe(
             product.style.format({
-                "qty_sold": "{:,.0f}",
+                "units_sold": "{:,.0f}",
                 "revenue": "{:,.2f} TL",
                 "gross_profit": "{:,.2f} TL",
-                "matched_cost_rate": "{:.1%}",
             }),
             use_container_width=True,
             hide_index=True,
         )
-        fig = px.bar(product.head(15).sort_values("qty_sold"), x="qty_sold", y="product_name", orientation="h")
+
+        fig = px.bar(product.head(15).sort_values("units_sold"), x="units_sold", y="product_name", orientation="h")
         st.plotly_chart(fig, use_container_width=True)
 
-with tab3:
-    st.subheader("Funnel")
+with tab4:
+    st.subheader("Traffic & Funnel")
     if funnel.empty:
-        st.info("shopify002.csv okunamadı veya bulunamadı.")
+        st.info("Funnel dosyası okunmadı.")
     else:
         fchart = funnel.melt(
             id_vars="month",
@@ -1129,54 +1051,76 @@ with tab3:
         st.plotly_chart(fig, use_container_width=True)
         st.dataframe(funnel, use_container_width=True, hide_index=True)
 
-    st.subheader("Geo Performance")
+    st.subheader("Geo")
     if geo.empty:
-        st.info("shopify003.csv okunamadı veya bulunamadı.")
+        st.info("Geo dosyası okunmadı.")
     else:
-        st.dataframe(geo.sort_values("sessions", ascending=False).head(30), use_container_width=True, hide_index=True)
+        st.dataframe(geo.sort_values("sessions", ascending=False).head(50), use_container_width=True, hide_index=True)
 
-with tab4:
+with tab5:
     st.subheader("Meta / Marketing")
     if meta_f.empty:
-        st.info("Meta dosyası okunamadı veya seçili tarihte veri yok.")
+        st.info("Meta / billing verisi okunmadı.")
     else:
-        st.dataframe(meta_f.sort_values("date", ascending=False), use_container_width=True, hide_index=True)
-        campaign = meta_f.groupby("campaign_name", as_index=False).agg(
+        st.markdown(
+            """
+            **Double-count kuralı:**  
+            Billing/fatura dosyası varsa gerçek `Total Ad Spend` sadece billing dosyasından alınır.  
+            Campaign dosyası varsa `campaign_spend_original` kontrol amaçlı gösterilir ama ana spend'e eklenmez.
+            """
+        )
+        st.dataframe(meta_f.sort_values(["source_type", "date"], ascending=[True, False]), use_container_width=True, hide_index=True)
+
+        campaign = meta_f.groupby(["source_type", "campaign_name"], as_index=False).agg(
             spend=("spend", "sum"),
+            campaign_spend_original=("campaign_spend_original", "sum"),
             attributed_revenue=("attributed_revenue", "sum"),
             purchases=("purchases", "sum"),
         )
-        campaign["roas"] = campaign.apply(lambda r: safe_divide(r["attributed_revenue"], r["spend"]), axis=1)
-        st.subheader("Campaign Summary")
-        st.dataframe(campaign.sort_values("spend", ascending=False), use_container_width=True, hide_index=True)
+        campaign["roas"] = campaign.apply(lambda r: safe_divide(r["attributed_revenue"], r["spend"]) if r["spend"] else safe_divide(r["attributed_revenue"], r["campaign_spend_original"]), axis=1)
+        st.subheader("Campaign / Source Summary")
+        st.dataframe(campaign.sort_values("campaign_spend_original", ascending=False), use_container_width=True, hide_index=True)
 
-with tab5:
+with tab6:
     st.subheader("Orders")
     if orders_f.empty:
         st.warning("Sipariş tablosu boş.")
     else:
         cols = [
             "order_name", "order_date", "financial_status", "fulfillment_status",
-            "net_sales", "gross_profit_estimated", "Payment Method", "Billing City", "Source", "source_file"
+            "net_sales", "gross_profit_estimated", "units", "Payment Method",
+            "Billing City", "Source", "source_file"
         ]
         cols = [c for c in cols if c in orders_f.columns]
         st.dataframe(orders_f.sort_values("order_date", ascending=False)[cols], use_container_width=True, hide_index=True)
 
-with tab6:
+with tab7:
     st.subheader("Data Quality")
     quality = pd.DataFrame([
-        {"Check": "Order files detected", "Value": len(groups["orders"])},
+        {"Check": "CSV files found", "Value": len(scan)},
+        {"Check": "Order files detected", "Value": int(scan["detected_type"].eq("orders").sum()) if not scan.empty else 0},
         {"Check": "Order rows loaded", "Value": len(orders)},
         {"Check": "Line rows loaded", "Value": len(lines)},
-        {"Check": "Cost rows loaded", "Value": len(model["costs"])},
+        {"Check": "Cost rows loaded", "Value": len(costs)},
         {"Check": "Funnel rows loaded", "Value": len(funnel)},
         {"Check": "Geo rows loaded", "Value": len(geo)},
         {"Check": "Gross monthly rows loaded", "Value": len(gross_monthly)},
         {"Check": "Meta rows loaded", "Value": len(meta)},
+        {"Check": "Cost match rate", "Value": f"{cost_match_rate:.1%}"},
     ])
     st.dataframe(quality, use_container_width=True, hide_index=True)
 
     if not lines.empty and "matched_cost" in lines.columns:
         missing = lines[~lines["matched_cost"]][["product_name", "sku_key", "source_file"]].drop_duplicates()
-        st.write("Products without matched cost")
-        st.dataframe(missing, use_container_width=True, hide_index=True)
+        st.markdown("### Cost eşleşmeyen ürünler")
+        if missing.empty:
+            st.success("Tüm ürünler maliyet tablosuyla eşleşmiş görünüyor.")
+        else:
+            st.dataframe(missing, use_container_width=True, hide_index=True)
+
+    st.markdown("### Okuma uyarıları")
+    if issues:
+        for issue in issues:
+            st.info(issue)
+    else:
+        st.success("Kritik okuma uyarısı yok.")
