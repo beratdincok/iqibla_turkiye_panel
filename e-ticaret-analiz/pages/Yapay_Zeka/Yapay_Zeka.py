@@ -466,6 +466,111 @@ def load_shopify_orders() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 # =========================================================
 # TRENDYOL / HEPSIBURADA BASIC LOADERS
 # =========================================================
+
+def parse_money_like_value(value) -> float:
+    """Trendyol sayfasından gelen 1,234.56 TL / 1.234,56 TL gibi değerleri sayıya çevirir."""
+    return to_float(value)
+
+
+@st.cache_data(show_spinner=False)
+def load_trendyol_page_total_revenue() -> tuple[float, pd.DataFrame]:
+    """
+    Yapay Zeka'nın Trendyol net cirosunu direkt Trendyol sayfasındaki
+    Total Revenue değerinden alması için ortak özet dosyasını okur.
+
+    Trendyol sayfası şu dosyalardan birini üretirse AI önce onu kullanır:
+    - trendyol_page_summary.csv
+    - trend_yol_page_summary.csv
+    - smartek_page_summary.csv
+
+    Beklenen formatlardan herhangi biri olabilir:
+
+    1) metric,value
+       Total Revenue,123456.78
+
+    2) Metric,Value
+       Total Revenue,"123.456,78 TL"
+
+    3) total_revenue
+       123456.78
+
+    4) Total Revenue
+       123456.78
+    """
+    summary_names = [
+        "trendyol_page_summary.csv",
+        "trend_yol_page_summary.csv",
+        "smartek_page_summary.csv",
+        "trendyol_summary.csv",
+    ]
+
+    debug_rows = []
+
+    for filename in summary_names:
+        path = TRENDYOL_DIR / filename
+        if not path.exists():
+            debug_rows.append({
+                "file": filename,
+                "status": "NOT_FOUND",
+                "total_revenue": 0.0,
+                "notes": "Özet dosyası bulunamadı.",
+            })
+            continue
+
+        df, enc, sep = read_table_flexible(path)
+        if df.empty:
+            debug_rows.append({
+                "file": filename,
+                "status": "ERROR",
+                "total_revenue": 0.0,
+                "notes": "Özet dosyası okunamadı.",
+            })
+            continue
+
+        # Format 1/2: metric-value kolonları
+        metric_col = find_col(df, ["metric", "metrik", "kpi", "name", "başlık", "baslik"])
+        value_col = find_col(df, ["value", "değer", "deger", "amount", "tutar"])
+
+        if metric_col and value_col:
+            for _, row in df.iterrows():
+                metric_name = normalize_text(row.get(metric_col, ""))
+                if metric_name in ["total revenue", "net ciro", "toplam net ciro", "ciro", "total sales"]:
+                    total = parse_money_like_value(row.get(value_col))
+                    debug_rows.append({
+                        "file": filename,
+                        "status": "OK",
+                        "total_revenue": total,
+                        "notes": f"Trendyol sayfası özetinden alındı. {metric_col} / {value_col}",
+                    })
+                    return total, pd.DataFrame(debug_rows)
+
+        # Format 3/4: total_revenue veya Total Revenue kolonu
+        total_col = find_col(df, [
+            "total_revenue", "Total Revenue", "Net Ciro", "Toplam Net Ciro",
+            "total sales", "revenue", "ciro"
+        ])
+
+        if total_col and len(df) > 0:
+            total = parse_money_like_value(df[total_col].iloc[0])
+            debug_rows.append({
+                "file": filename,
+                "status": "OK",
+                "total_revenue": total,
+                "notes": f"Trendyol sayfası özetinden alındı. Kolon: {total_col}",
+            })
+            return total, pd.DataFrame(debug_rows)
+
+        debug_rows.append({
+            "file": filename,
+            "status": "WARNING",
+            "total_revenue": 0.0,
+            "notes": "Özet dosyasında Total Revenue / Net Ciro bulunamadı.",
+        })
+
+    return 0.0, pd.DataFrame(debug_rows)
+
+
+
 @st.cache_data(show_spinner=False)
 def load_trendyol_basic() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
@@ -850,8 +955,33 @@ def load_creative_ads() -> tuple[pd.DataFrame, pd.DataFrame]:
 def build_model():
     shopify_costs = load_shopify_costs()
     shopify_orders, shopify_lines, shopify_debug = load_shopify_orders()
+    trendyol_page_total_revenue, trendyol_page_summary_debug = load_trendyol_page_total_revenue()
     trendyol_orders, trendyol_lines, trendyol_debug = load_trendyol_basic()
     hb_orders, hb_lines = load_hepsiburada_basic()
+
+    # Trendyol sayfası Total Revenue özet dosyası varsa,
+    # AI toplam net ciro için bunu ana kaynak olarak kullanır.
+    if trendyol_page_total_revenue > 0:
+        trendyol_orders = pd.DataFrame([{
+            "platform": "Trendyol",
+            "order_name": "trendyol_page_total_revenue",
+            "order_date": pd.NaT,
+            "net_sales": trendyol_page_total_revenue,
+            "order_count": 1,
+            "source_file": "trendyol_page_summary.csv / Trendyol page Total Revenue",
+        }])
+        if trendyol_lines.empty:
+            trendyol_lines = pd.DataFrame([{
+                "platform": "Trendyol",
+                "order_name": "trendyol_page_total_revenue",
+                "order_date": pd.NaT,
+                "product_name": "Trendyol Total Revenue",
+                "sku_key": "",
+                "qty": 1,
+                "line_revenue": trendyol_page_total_revenue,
+                "source_file": "trendyol_page_summary.csv / Trendyol page Total Revenue",
+            }])
+
     creative_ads, creative_debug = load_creative_ads()
 
     if not shopify_lines.empty:
@@ -893,7 +1023,7 @@ def build_model():
     if shopify_costs.empty:
         issues.append("Shopify maliyet tablosu okunamadı. Kâr hesabı eksik olabilir.")
     if trendyol_orders.empty:
-        issues.append("Trendyol sipariş verisi okunamadı. Trendyol net ciro için pages/smartek_app klasöründe Tedarikci_Siparisleri / sipariş dosyası olmalı.")
+        issues.append("Trendyol Total Revenue okunamadı. Öncelik: pages/smartek_app/trendyol_page_summary.csv içindeki Trendyol sayfası Total Revenue. Yoksa Tedarikci_Siparisleri / sipariş dosyası gerekir.")
     if creative_ads.empty:
         issues.append("Kreatif_Takip klasöründen Meta reklam/kreatif verisi okunamadı. ROAS ve reklam harcaması eksik kalır.")
 
@@ -905,6 +1035,7 @@ def build_model():
         "trendyol_orders": trendyol_orders,
         "trendyol_lines": trendyol_lines,
         "trendyol_debug": trendyol_debug,
+        "trendyol_page_summary_debug": trendyol_page_summary_debug,
         "hepsiburada_orders": hb_orders,
         "orders": all_orders,
         "lines": all_lines,
@@ -923,6 +1054,7 @@ shopify_debug = model["shopify_debug"]
 trendyol_orders = model["trendyol_orders"]
 trendyol_lines = model.get("trendyol_lines", pd.DataFrame())
 trendyol_debug = model.get("trendyol_debug", pd.DataFrame())
+trendyol_page_summary_debug = model.get("trendyol_page_summary_debug", pd.DataFrame())
 hepsiburada_orders = model["hepsiburada_orders"]
 orders_all = model["orders"]
 lines_all = model["lines"]
@@ -1262,7 +1394,9 @@ if show_debug:
     with st.expander("Veri kaynakları / debug", expanded=False):
         st.write("Shopify order debug")
         st.dataframe(shopify_debug, use_container_width=True, hide_index=True)
-        st.write("Trendyol debug")
+        st.write("Trendyol sayfası Total Revenue özet debug")
+        st.dataframe(trendyol_page_summary_debug, use_container_width=True, hide_index=True)
+        st.write("Trendyol sipariş fallback debug")
         st.dataframe(trendyol_debug, use_container_width=True, hide_index=True)
         st.write("Kreatif/Meta debug")
         st.dataframe(creative_debug, use_container_width=True, hide_index=True)
@@ -1345,7 +1479,7 @@ if selected_report == "Net Ciro ve Sipariş Yorumu":
 **Durum Özeti:** Toplam net ciro 3 kanaldan geliyor: **{money(all_net_revenue)}**.  
 
 - Shopify: **{money(shopify_net_revenue)}**
-- Trendyol: **{money(trendyol_net_revenue)}**
+- Trendyol: **{money(trendyol_net_revenue)}** *(öncelik: Trendyol sayfası Total Revenue özet dosyası)*
 - Hepsiburada: **{money(hepsiburada_net_revenue)}**
 
 **Toplam Sipariş:** {all_order_count:,}  
@@ -1458,10 +1592,16 @@ with tab1:
 with tab2:
     st.subheader("Trendyol Kaynaklı Satış Verisi")
     st.info("Trendyol net ciro burada pages/smartek_app klasöründeki sipariş / Tedarikci_Siparisleri dosyalarından alınır.")
-    if trendyol_debug.empty:
-        st.warning("Trendyol debug verisi yok.")
+    st.markdown("### Trendyol Sayfası Total Revenue Özet Durumu")
+    if trendyol_page_summary_debug.empty:
+        st.warning("Trendyol sayfası özet debug verisi yok.")
     else:
-        st.markdown("### Trendyol Dosya Okuma Durumu")
+        st.dataframe(trendyol_page_summary_debug, use_container_width=True, hide_index=True)
+
+    st.markdown("### Trendyol Sipariş Fallback Okuma Durumu")
+    if trendyol_debug.empty:
+        st.info("Fallback sipariş debug verisi yok.")
+    else:
         st.dataframe(trendyol_debug, use_container_width=True, hide_index=True)
 
     if trendyol_orders.empty:
