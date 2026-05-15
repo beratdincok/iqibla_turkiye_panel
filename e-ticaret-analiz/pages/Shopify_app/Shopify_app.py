@@ -27,6 +27,68 @@ st.caption("Shopify satış, maliyet, funnel, şehir/bölge, Meta reklam ve fatu
 
 DATA_DIR = Path(__file__).resolve().parent
 
+# =========================================================
+# MANUAL INVENTORY
+# =========================================================
+MANUAL_INVENTORY = {
+    "j01t green": 102,
+    "j01t camel": 102,
+    "j01 blue": 60,
+    "j01 grey": 47,
+    "j03 pro titanium": 541,
+    "black j01t": 266,
+    "j01t black": 266,
+    "salat counter": 35,
+    "premium black gold 22mm": 9,
+    "premium rose gold 20mm": 7,
+    "premium black gray 22mm": 7,
+    "j01 pink": 120,
+    "j01 green": 120,
+    "j01 black": 160,
+}
+
+
+def inventory_key_for_product(product_name: str) -> str:
+    text = normalize_text(product_name)
+
+    if "jood lite" in text or "j01t" in text:
+        if "yesil" in text or "green" in text:
+            return "j01t green"
+        if "camel" in text or "kum" in text or "bej" in text:
+            return "j01t camel"
+        if "siyah" in text or "black" in text:
+            return "j01t black"
+
+    if "jood 3 pro" in text or "j03 pro" in text:
+        if "titanyum" in text or "titanium" in text or "gri" in text:
+            return "j03 pro titanium"
+
+    if "rekat" in text or "salat" in text or "salavatmatik" in text:
+        return "salat counter"
+
+    if "premium" in text:
+        if "rose" in text and "20" in text:
+            return "premium rose gold 20mm"
+        if "black" in text and "gold" in text and "22" in text:
+            return "premium black gold 22mm"
+        if ("gray" in text or "grey" in text or "gri" in text) and "22" in text:
+            return "premium black gray 22mm"
+
+    if "jood" in text or "j01" in text:
+        if "pembe" in text or "pink" in text:
+            return "j01 pink"
+        if "yesil" in text or "green" in text:
+            return "j01 green"
+        if "siyah" in text or "black" in text:
+            return "j01 black"
+        if "mavi" in text or "blue" in text:
+            return "j01 blue"
+        if "gri" in text or "grey" in text or "gray" in text:
+            return "j01 grey"
+
+    return ""
+
+
 
 # =========================================================
 # HELPERS
@@ -487,18 +549,103 @@ def load_gross_monthly() -> pd.DataFrame:
     return out.dropna(subset=["month"])
 
 
+
+def parse_meta_billing_report(path: Path) -> pd.DataFrame:
+    """
+    Meta Fatura Özeti dosyaları normal CSV gibi başlamaz.
+    Dosyada 'Meta Reklamları Ödemesi' bölümünü bulur ve sadece ödeme satırlarını okur.
+    """
+    raw_text = ""
+    for enc in ["utf-8-sig", "utf-8", "iso-8859-9", "cp1254", "latin1"]:
+        try:
+            raw_text = path.read_text(encoding=enc)
+            if raw_text:
+                break
+        except Exception:
+            continue
+
+    if not raw_text:
+        return pd.DataFrame()
+
+    marker_candidates = [
+        "Meta Reklamları Ödemesi",
+        "Meta Reklamlari Odemesi",
+        "Meta Ads Payments",
+        "Meta Advertising Payments",
+    ]
+
+    start_idx = -1
+    for marker in marker_candidates:
+        start_idx = raw_text.find(marker)
+        if start_idx != -1:
+            break
+
+    if start_idx == -1:
+        return pd.DataFrame()
+
+    lines = raw_text[start_idx:].splitlines()
+    if len(lines) < 3:
+        return pd.DataFrame()
+
+    # Marker satırından sonraki satır header.
+    header_line = lines[1]
+    data_lines = []
+
+    for line in lines[2:]:
+        if not line.strip():
+            if data_lines:
+                break
+            continue
+        # Alt bölümlere gelirse dur.
+        if line.lower().startswith(("vat", "kdv", "toplam", "total")):
+            break
+        data_lines.append(line)
+
+    if not data_lines:
+        return pd.DataFrame()
+
+    rows = []
+    reader = csv.reader(data_lines)
+    for row in reader:
+        if len(row) < 4:
+            continue
+
+        date_raw = str(row[0]).strip()
+        amount_raw = row[3]
+
+        # Tarih formatı: 13.05.2026
+        date = pd.to_datetime(date_raw, format="%d.%m.%Y", errors="coerce")
+        if pd.isna(date):
+            date = pd.to_datetime(date_raw, errors="coerce")
+
+        spend = to_float(amount_raw)
+
+        if pd.notna(date) and spend > 0:
+            rows.append({
+                "date": date,
+                "campaign_name": "Meta Billing",
+                "spend": spend,
+                "attributed_revenue": 0.0,
+                "purchases": 0.0,
+                "source_file": path.name,
+                "source_type": "billing",
+                "campaign_spend_original": 0.0,
+            })
+
+    return pd.DataFrame(rows)
+
 @st.cache_data(show_spinner=False)
 def load_meta() -> pd.DataFrame:
     """
-    Meta Spend'i çift saymamak için yeni mantık:
+    Meta Spend çift saymayı engeller.
 
-    1) meta_billing / fatura dosyası varsa:
-       - Gerçek Meta Spend sadece billing/fatura dosyasından alınır.
-       - meta_campaigns dosyası sadece campaign, revenue, purchase ve ROAS analizi için kullanılır.
-       - campaign dosyasındaki spend, campaign_spend_original kolonunda saklanır ama ana spend'e eklenmez.
+    Billing/fatura dosyası varsa:
+    - Ana Total Ad Spend sadece billing dosyasından alınır.
+    - Campaign dosyasındaki spend ana spend'e eklenmez.
+    - Campaign dosyası sadece Total Ad Revenue, purchases ve campaign ROAS için kullanılır.
 
-    2) Billing/fatura dosyası yoksa:
-       - Meta Spend campaign/performance dosyasındaki spend'den alınır.
+    Billing yoksa:
+    - Campaign dosyasındaki spend ana spend olarak kullanılır.
     """
     groups = classify_files()
 
@@ -508,10 +655,14 @@ def load_meta() -> pd.DataFrame:
     billing_rows = []
     campaign_rows = []
 
-    # =========================
-    # 1. BILLING / FATURA DOSYASI
-    # =========================
+    # 1) Billing / Fatura
     for path in billing_files:
+        parsed = parse_meta_billing_report(path)
+        if not parsed.empty:
+            billing_rows.append(parsed)
+            continue
+
+        # Fallback: normal tablo gibi okumayı dene.
         df = read_csv_flexible(path)
         if df.empty:
             continue
@@ -529,8 +680,6 @@ def load_meta() -> pd.DataFrame:
             "Type", "İşlem Türü", "Islem Turu"
         ])
 
-        # Bazı Meta fatura dosyalarında harcama kolonu farklı isimle gelebilir.
-        # Kolon bulunamazsa toplamı pozitif olan en güçlü sayısal kolonu seç.
         if not spend_col:
             possible_numeric_cols = []
             for col in df.columns:
@@ -539,8 +688,7 @@ def load_meta() -> pd.DataFrame:
                 if total > 0:
                     possible_numeric_cols.append((total, col))
             if possible_numeric_cols:
-                possible_numeric_cols = sorted(possible_numeric_cols, reverse=True)
-                spend_col = possible_numeric_cols[0][1]
+                spend_col = sorted(possible_numeric_cols, reverse=True)[0][1]
 
         if not spend_col:
             continue
@@ -555,16 +703,13 @@ def load_meta() -> pd.DataFrame:
             "source_type": "billing",
             "campaign_spend_original": 0.0,
         })
-
-        # Eksi veya sıfır ödeme satırlarını ana spend'den çıkar.
         tmp = tmp[tmp["spend"] > 0].copy()
-        billing_rows.append(tmp)
+        if not tmp.empty:
+            billing_rows.append(tmp)
 
     billing_df = pd.concat(billing_rows, ignore_index=True) if billing_rows else pd.DataFrame()
 
-    # =========================
-    # 2. CAMPAIGN / PERFORMANCE DOSYASI
-    # =========================
+    # 2) Campaign / Performance
     for path in campaign_files:
         df = read_csv_flexible(path)
         if df.empty:
@@ -628,12 +773,7 @@ def load_meta() -> pd.DataFrame:
 
     campaign_df = pd.concat(campaign_rows, ignore_index=True) if campaign_rows else pd.DataFrame()
 
-    # =========================
-    # 3. DOUBLE COUNT ÖNLEME
-    # =========================
     if not billing_df.empty:
-        # Billing varsa gerçek Meta Spend billing'den alınır.
-        # Campaign dosyası spend'e eklenmez, sadece revenue/purchase/ROAS için tutulur.
         if not campaign_df.empty:
             campaign_df["spend"] = 0.0
             campaign_df = campaign_df[[
@@ -650,7 +790,6 @@ def load_meta() -> pd.DataFrame:
         final = pd.concat([billing_df, campaign_df], ignore_index=True) if not campaign_df.empty else billing_df.copy()
 
     else:
-        # Billing yoksa campaign spend kullanılır.
         if not campaign_df.empty:
             campaign_df["spend"] = campaign_df["campaign_spend_original"]
             final = campaign_df[[
@@ -724,9 +863,13 @@ def build_model():
         lines["estimated_cost_total"] = (lines["unit_cost"] + lines["unit_ship"]) * lines["qty"]
         lines["estimated_commission_total"] = lines["line_revenue"] * lines["commission_rate"]
         lines["gross_profit"] = lines["line_revenue"] - lines["estimated_cost_total"] - lines["estimated_commission_total"]
+        lines["inventory_key"] = lines["product_name"].apply(inventory_key_for_product)
+        lines["stock_units"] = lines["inventory_key"].map(MANUAL_INVENTORY)
     else:
         lines["gross_profit"] = []
         lines["matched_cost"] = []
+        lines["inventory_key"] = []
+        lines["stock_units"] = []
 
     if not orders.empty and not lines.empty:
         profit = lines.groupby("order_name", as_index=False).agg(gross_profit_estimated=("gross_profit", "sum"))
@@ -803,32 +946,77 @@ meta_f = filter_df_by_date(meta, "date")
 # =========================================================
 # KPI
 # =========================================================
-total_sales = float(orders_f["net_sales"].sum()) if not orders_f.empty else 0.0
-total_orders = int(orders_f["order_count"].sum()) if not orders_f.empty and "order_count" in orders_f.columns else int(orders_f["order_name"].nunique()) if not orders_f.empty else 0
-aov = safe_divide(total_sales, total_orders)
-gross_profit = float(orders_f["gross_profit_estimated"].sum()) if not orders_f.empty and "gross_profit_estimated" in orders_f.columns else float(lines_f["gross_profit"].sum()) if not lines_f.empty else 0.0
-meta_spend = float(meta_f["spend"].sum()) if not meta_f.empty else 0.0
-meta_revenue = float(meta_f["attributed_revenue"].sum()) if not meta_f.empty else 0.0
-meta_purchases = float(meta_f["purchases"].sum()) if not meta_f.empty else 0.0
-net_profit_after_ads = gross_profit - meta_spend
-roas = safe_divide(meta_revenue, meta_spend)
-mer = safe_divide(total_sales, meta_spend)
+total_revenue = float(orders_f["net_sales"].sum()) if not orders_f.empty else 0.0
+order_count = int(orders_f["order_count"].sum()) if not orders_f.empty and "order_count" in orders_f.columns else int(orders_f["order_name"].nunique()) if not orders_f.empty else 0
+units_sold = float(lines_f["qty"].sum()) if not lines_f.empty and "qty" in lines_f.columns else 0.0
+aov = safe_divide(total_revenue, order_count)
+
+gross_profit_before_ads = (
+    float(orders_f["gross_profit_estimated"].sum())
+    if not orders_f.empty and "gross_profit_estimated" in orders_f.columns
+    else float(lines_f["gross_profit"].sum()) if not lines_f.empty and "gross_profit" in lines_f.columns
+    else 0.0
+)
+
+total_ad_spend = float(meta_f["spend"].sum()) if not meta_f.empty else 0.0
+total_ad_revenue = float(meta_f["attributed_revenue"].sum()) if not meta_f.empty else 0.0
+total_ad_purchases = float(meta_f["purchases"].sum()) if not meta_f.empty else 0.0
+
+net_profit_after_ads = gross_profit_before_ads - total_ad_spend
+roas = safe_divide(total_ad_revenue, total_ad_spend)
+mer = safe_divide(total_revenue, total_ad_spend)
+
+if not lines_f.empty and "inventory_key" in lines_f.columns:
+    inventory_items = (
+        lines_f[["inventory_key", "stock_units"]]
+        .dropna(subset=["inventory_key"])
+        .query("inventory_key != ''")
+        .drop_duplicates("inventory_key")
+    )
+else:
+    inventory_items = pd.DataFrame(columns=["inventory_key", "stock_units"])
+
+total_inventory_units = float(inventory_items["stock_units"].fillna(0).sum()) if not inventory_items.empty else 0.0
+tracked_inventory_items = int(inventory_items["inventory_key"].nunique()) if not inventory_items.empty else 0
+low_stock_items = int(inventory_items["stock_units"].fillna(0).le(low_stock_threshold).sum()) if not inventory_items.empty else 0
 
 
 # =========================================================
-# UI
+# MAIN REPORT CARDS
 # =========================================================
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Net Sales", f"{total_sales:,.2f} TL")
-c2.metric("Orders", f"{total_orders:,}")
-c3.metric("AOV", f"{aov:,.2f} TL")
-c4.metric("Estimated Gross Profit", f"{gross_profit:,.2f} TL")
+st.subheader("Shopify Main Report")
 
-c5, c6, c7, c8 = st.columns(4)
-c5.metric("Meta Spend", f"{meta_spend:,.2f} TL")
-c6.metric("Net Profit After Ads", f"{net_profit_after_ads:,.2f} TL")
-c7.metric("Meta ROAS", f"{roas:,.2f}" if roas else "N/A")
-c8.metric("MER", f"{mer:,.2f}" if mer else "N/A")
+r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+r1c1.metric("Total Revenue", f"{total_revenue:,.2f} TL")
+r1c2.metric("Order Count", f"{order_count:,}")
+r1c3.metric("Units Sold", f"{units_sold:,.0f}")
+r1c4.metric("AOV", f"{aov:,.2f} TL")
+
+r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+r2c1.metric("Total Ad Revenue", f"{total_ad_revenue:,.2f} TL")
+r2c2.metric("ROAS", f"{roas:,.2f}" if roas else "N/A")
+r2c3.metric("Gross Profit Before Ads", f"{gross_profit_before_ads:,.2f} TL")
+r2c4.metric("Total Ad Spend", f"{total_ad_spend:,.2f} TL")
+
+r3c1, r3c2, r3c3, r3c4 = st.columns(4)
+r3c1.metric("Net Profit After Ads", f"{net_profit_after_ads:,.2f} TL")
+r3c2.metric("MER", f"{mer:,.2f}" if mer else "N/A")
+r3c3.metric("Total Inventory Units", f"{total_inventory_units:,.0f}")
+r3c4.metric("Tracked Inventory Items", f"{tracked_inventory_items:,}")
+
+r4c1, r4c2, r4c3, r4c4 = st.columns(4)
+r4c1.metric("Low Stock Items", f"{low_stock_items:,}")
+r4c2.metric("Ad Purchases", f"{total_ad_purchases:,.0f}")
+r4c3.metric("Cost Match Rate", f"{(lines_f['matched_cost'].mean() * 100):,.1f}%" if not lines_f.empty and "matched_cost" in lines_f.columns else "N/A")
+r4c4.metric("Report Period", "All Time" if all_time else f"{start_date} → {end_date}")
+
+# Eski değişken isimleri, tablarda uyumluluk için:
+total_sales = total_revenue
+total_orders = order_count
+gross_profit = gross_profit_before_ads
+meta_spend = total_ad_spend
+meta_revenue = total_ad_revenue
+meta_purchases = total_ad_purchases
 
 if issues:
     with st.expander("Okuma uyarıları", expanded=orders.empty):
@@ -847,6 +1035,11 @@ if show_debug:
         if order_debug:
             st.write("Order parser debug")
             st.dataframe(pd.DataFrame(order_debug), use_container_width=True, hide_index=True)
+        if not meta.empty:
+            st.write("Meta source debug")
+            debug_cols = [c for c in ["source_file", "source_type", "spend", "campaign_spend_original", "attributed_revenue", "purchases"] if c in meta.columns]
+            st.dataframe(meta[debug_cols].groupby(["source_file", "source_type"], as_index=False).sum(numeric_only=True), use_container_width=True, hide_index=True)
+
 
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "Sales Performance",
