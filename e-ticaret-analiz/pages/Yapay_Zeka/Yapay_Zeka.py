@@ -1,11 +1,11 @@
 
 from __future__ import annotations
 
+import csv
 import re
-import json
 import unicodedata
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
 import pandas as pd
 import plotly.express as px
@@ -17,33 +17,30 @@ import streamlit as st
 # =========================================================
 st.set_page_config(page_title="SMARTEK360 | Yapay Zeka Analiz", layout="wide")
 
-# Ana sayfadan giriş yapılmadan açılmasın.
 if "logged_in" not in st.session_state or st.session_state.logged_in is not True:
     st.warning("Bu sayfaya erişmek için önce ana sayfadan giriş yapmalısın.")
     st.stop()
 
+
 # =========================================================
-# THEME / UI
+# THEME
 # =========================================================
 st.markdown(
     """
     <style>
         .stApp {
             background:
-                radial-gradient(circle at 50% 8%, rgba(218, 165, 32, 0.16), transparent 30%),
+                radial-gradient(circle at 50% 8%, rgba(218,165,32,0.16), transparent 30%),
                 linear-gradient(135deg, #050505 0%, #111111 48%, #050505 100%);
         }
-
         header { visibility: hidden; }
         #MainMenu { visibility: hidden; }
         footer { visibility: hidden; }
-
         .block-container {
             padding-top: 2rem;
             padding-bottom: 2rem;
             max-width: 1450px;
         }
-
         .ai-hero {
             background: rgba(8, 8, 8, 0.78);
             border: 1px solid rgba(212, 175, 55, 0.35);
@@ -53,7 +50,6 @@ st.markdown(
             backdrop-filter: blur(16px);
             margin-bottom: 22px;
         }
-
         .ai-title {
             color: #ffffff;
             font-size: 42px;
@@ -61,13 +57,11 @@ st.markdown(
             letter-spacing: 0.4px;
             margin-bottom: 6px;
         }
-
         .ai-subtitle {
             color: rgba(255,255,255,0.72);
             font-size: 16px;
             line-height: 1.5;
         }
-
         .gold-line {
             width: 150px;
             height: 3px;
@@ -75,7 +69,6 @@ st.markdown(
             margin-top: 18px;
             border-radius: 99px;
         }
-
         .assistant-box {
             background: rgba(255,255,255,0.055);
             border: 1px solid rgba(212,175,55,0.22);
@@ -84,7 +77,6 @@ st.markdown(
             margin-top: 10px;
             margin-bottom: 18px;
         }
-
         div.stButton > button {
             border-radius: 14px;
             border: 1px solid rgba(212,175,55,0.55);
@@ -92,13 +84,11 @@ st.markdown(
             color: #111111;
             font-weight: 800;
         }
-
         div.stButton > button:hover {
             border-color: #ffffff;
             color: #000000;
             box-shadow: 0 0 22px rgba(212,175,55,0.35);
         }
-
         [data-testid="stMetric"] {
             background: rgba(255,255,255,0.055);
             border: 1px solid rgba(255,255,255,0.08);
@@ -115,8 +105,9 @@ st.markdown(
     <div class="ai-hero">
         <div class="ai-title">🤖 SMARTEK360: Yapay Zeka Analiz Paneli</div>
         <div class="ai-subtitle">
-            Shopify, Trendyol, Hepsiburada ve Kreatif Takibi verilerini okuyarak net ciro, sipariş, kâr, ROAS, CAC, stok,
-            tahmin ve aksiyon yorumları üretir. Ayrıca Gemini tarzı canlı soru-cevap asistanı içerir.
+            Bu sürümde veri kaynakları net ayrıldı:
+            <b>Net Ciro / Sipariş / Kâr Shopify dosyalarından</b>,
+            <b>reklam harcaması / ROAS / kreatif yorumu Kreatif_Takip yani Meta raporlarından</b> alınır.
         </div>
         <div class="gold-line"></div>
     </div>
@@ -133,7 +124,6 @@ def find_project_root() -> Path:
     for parent in [current.parent, *current.parents]:
         if (parent / "ana_sayfa.py").exists():
             return parent
-    # Normal yapı: e-ticaret-analiz/pages/Yapay_Zeka/Yapay_Zeka.py
     return Path(__file__).resolve().parents[2]
 
 
@@ -144,7 +134,6 @@ SHOPIFY_DIR = PAGES_DIR / "Shopify_app"
 TRENDYOL_DIR = PAGES_DIR / "smartek_app"
 HEPSIBURADA_DIR = PAGES_DIR / "Hepsiburada_app"
 KREATIF_DIR = PAGES_DIR / "Kreatif_Takip"
-AI_DIR = Path(__file__).resolve().parent
 
 
 # =========================================================
@@ -153,16 +142,16 @@ AI_DIR = Path(__file__).resolve().parent
 def normalize_text(value) -> str:
     if value is None or pd.isna(value):
         return ""
-    text = str(value).lower().strip()
+    s = str(value).lower().strip()
     tr_map = str.maketrans({
         "ı": "i", "İ": "i", "ş": "s", "Ş": "s", "ğ": "g", "Ğ": "g",
-        "ü": "u", "Ü": "u", "ö": "o", "Ö": "o", "ç": "c", "Ç": "c",
+        "ç": "c", "Ç": "c", "ö": "o", "Ö": "o", "ü": "u", "Ü": "u",
     })
-    text = text.translate(tr_map)
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    text = re.sub(r"[^a-z0-9]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
+    s = s.translate(tr_map)
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
 
 
 def to_float(value) -> float:
@@ -182,7 +171,7 @@ def to_float(value) -> float:
         .replace(" ", "")
     )
 
-    if s.lower() in {"-", "nan", "none", "null", "sürekli", "surekli", "henüzfaturakesilmemiştir."}:
+    if s.lower() in {"-", "nan", "none", "null"}:
         return 0.0
 
     if "," in s and "." in s:
@@ -211,7 +200,7 @@ def to_float(value) -> float:
 def clean_sku(value) -> str:
     if value is None or pd.isna(value):
         return ""
-    s = str(value).strip().replace(" ", "")
+    s = str(value).strip().replace(" ", "").replace("'", "")
     if s.startswith("6-"):
         s = s[2:]
     s = s.replace("-", "")
@@ -225,705 +214,559 @@ def clean_sku(value) -> str:
     return s
 
 
-def find_col(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
-    normalized_cols = {normalize_text(c): c for c in df.columns}
-    normalized_candidates = [normalize_text(c) for c in candidates]
+def find_col(df: pd.DataFrame, candidates: list[str]) -> Optional[str]:
+    norm_map = {normalize_text(c): c for c in df.columns}
 
-    for target in normalized_candidates:
-        for norm_col, raw_col in normalized_cols.items():
-            if target == norm_col:
-                return raw_col
+    for cand in candidates:
+        target = normalize_text(cand)
+        for norm, raw in norm_map.items():
+            if target == norm:
+                return raw
 
-    for target in normalized_candidates:
-        for norm_col, raw_col in normalized_cols.items():
-            if target and target in norm_col:
-                return raw_col
+    for cand in candidates:
+        target = normalize_text(cand)
+        for norm, raw in norm_map.items():
+            if target and target in norm:
+                return raw
 
     return None
 
 
-def read_csv_flexible(path: Path | str) -> pd.DataFrame:
-    encodings = ["utf-8-sig", "utf-8", "iso-8859-9", "cp1254", "latin1"]
+def safe_divide(a: float, b: float) -> float:
+    return float(a) / float(b) if b else 0.0
+
+
+def money(v: float) -> str:
+    return f"{v:,.2f} TL"
+
+
+def read_csv_flexible(path: Path, skiprows: int = 0) -> tuple[pd.DataFrame, str, str]:
+    encodings = ["utf-8-sig", "utf-8", "cp1254", "iso-8859-9", "latin1"]
     seps = [",", ";", "\t"]
 
     for enc in encodings:
         for sep in seps:
             try:
-                df = pd.read_csv(path, encoding=enc, sep=sep, dtype=str, low_memory=False)
+                df = pd.read_csv(path, encoding=enc, sep=sep, dtype=str, low_memory=False, skiprows=skiprows)
                 if df.shape[1] > 1:
-                    return df
+                    return df, enc, sep
             except Exception:
                 continue
-
-    return pd.DataFrame()
-
-
-def safe_divide(num: float, den: float) -> float:
-    return float(num) / float(den) if den else 0.0
+    return pd.DataFrame(), "", ""
 
 
-def money(value: float) -> str:
-    return f"{value:,.2f} TL"
+def read_shopify_orders(path: Path) -> tuple[pd.DataFrame, str, str]:
+    df, enc, sep = read_csv_flexible(path)
+    if not df.empty and {"Name", "Created at", "Lineitem name"}.issubset(set(df.columns)):
+        return df, enc, sep
+
+    encodings = ["utf-8-sig", "utf-8", "cp1254", "iso-8859-9", "latin1"]
+    for enc in encodings:
+        try:
+            with open(path, "r", encoding=enc, errors="replace", newline="") as f:
+                rows = list(csv.reader(f))
+            if not rows:
+                continue
+            header = rows[0]
+            if len(header) == 1 and "," in header[0]:
+                header = next(csv.reader([header[0]]))
+            hlen = len(header)
+            fixed = []
+            for row in rows[1:]:
+                if len(row) == 1 and "," in row[0]:
+                    row = next(csv.reader([row[0]]))
+                if len(row) < hlen:
+                    row += [""] * (hlen - len(row))
+                elif len(row) > hlen:
+                    row = row[:hlen]
+                fixed.append(row)
+            out = pd.DataFrame(fixed, columns=header)
+            if {"Name", "Created at", "Lineitem name"}.issubset(set(out.columns)):
+                return out, enc, "robust-csv"
+        except Exception:
+            continue
+
+    return pd.DataFrame(), "", ""
 
 
-def pct(value: float) -> str:
-    return f"%{value:,.1f}"
-
-
-def list_csvs(folder: Path) -> list[Path]:
-    if not folder.exists():
-        return []
-    return sorted(folder.glob("*.csv"))
-
-
-def date_minmax(series: pd.Series) -> tuple[pd.Timestamp, pd.Timestamp]:
-    parsed = pd.to_datetime(series, errors="coerce").dropna()
-    if parsed.empty:
-        today = pd.Timestamp.today().normalize()
-        return today, today
-    return parsed.min(), parsed.max()
-
-
-# =========================================================
-# MANUAL STOCK MAP
-# =========================================================
-MANUAL_INVENTORY = {
-    "j01t green": 102,
-    "j01t camel": 102,
-    "j01 blue": 60,
-    "j01 grey": 47,
-    "j03 pro titanium": 541,
-    "black j01t": 266,
-    "j01t black": 266,
-    "salat counter": 35,
-    "premium black gold 22mm": 9,
-    "premium rose gold 20mm": 7,
-    "premium black gray 22mm": 7,
-    "j01 pink": 120,
-    "j01 green": 120,
-    "j01 black": 160,
-}
-
-
-def infer_inventory_key(product_name: str) -> str:
-    text = normalize_text(product_name)
-
-    if "jood lite" in text or "j01t" in text:
-        if "yesil" in text or "green" in text:
-            return "j01t green"
-        if "camel" in text or "kum" in text or "bej" in text:
-            return "j01t camel"
-        if "siyah" in text or "black" in text:
-            return "j01t black"
-
-    if "jood 3 pro" in text or "j03 pro" in text:
-        if "titanyum" in text or "titanium" in text or "gri" in text:
-            return "j03 pro titanium"
-
-    if "rekat" in text or "salat" in text or "salavatmatik" in text:
-        return "salat counter"
-
-    if "premium" in text:
-        if "rose" in text and "20" in text:
-            return "premium rose gold 20mm"
-        if "black" in text and "gold" in text and "22" in text:
-            return "premium black gold 22mm"
-        if ("gray" in text or "grey" in text or "gri" in text) and "22" in text:
-            return "premium black gray 22mm"
-
-    if "jood" in text or "j01" in text:
-        if "pembe" in text or "pink" in text:
-            return "j01 pink"
-        if "yesil" in text or "green" in text:
-            return "j01 green"
-        if "siyah" in text or "black" in text:
-            return "j01 black"
-        if "mavi" in text or "blue" in text:
-            return "j01 blue"
-        if "gri" in text or "grey" in text or "gray" in text:
-            return "j01 grey"
-
-    return ""
+def compact_table(df: pd.DataFrame, max_rows: int = 10) -> str:
+    if df is None or df.empty:
+        return "Veri yok."
+    view = df.head(max_rows).copy()
+    try:
+        return view.to_markdown(index=False)
+    except Exception:
+        return view.to_string(index=False)
 
 
 # =========================================================
-# LOAD SHOPIFY
+# SHOPIFY LOADERS
 # =========================================================
+def is_shopify_order_file(path: Path) -> bool:
+    name = normalize_text(path.name)
+    if any(x in name for x in ["maliyet", "meta", "billing", "fatura", "zamana gore", "oturum"]):
+        return False
+    df, _, _ = read_shopify_orders(path)
+    return not df.empty
+
+
 @st.cache_data(show_spinner=False)
-def load_shopify_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    orders_rows = []
-    line_rows = []
+def load_shopify_costs() -> pd.DataFrame:
+    if not SHOPIFY_DIR.exists():
+        return pd.DataFrame(columns=["sku_key", "unit_cost", "commission_rate", "unit_shipping"])
 
-    for path in list_csvs(SHOPIFY_DIR):
-        name = path.name.lower()
-        if "maliyet" in name or "meta" in name or "formatted report" in name:
-            continue
-        if "shopify002" in name or "shopify003" in name or "shopify004" in name:
-            continue
-        if "shopify" not in name:
+    files = [p for p in SHOPIFY_DIR.glob("*.csv") if "maliyet" in normalize_text(p.name)]
+    if not files:
+        return pd.DataFrame(columns=["sku_key", "unit_cost", "commission_rate", "unit_shipping"])
+
+    df, _, _ = read_csv_flexible(files[0])
+    if df.empty:
+        return pd.DataFrame(columns=["sku_key", "unit_cost", "commission_rate", "unit_shipping"])
+
+    sku_col = find_col(df, ["SKU"])
+    cost_col = find_col(df, ["Maliyet", "Maliyet Alış", "Cost"])
+    comm_col = find_col(df, ["Komisyon oran", "Komisyon", "Commission"])
+    ship_col = find_col(df, ["Kargo", "Shipping"])
+
+    if not sku_col:
+        return pd.DataFrame(columns=["sku_key", "unit_cost", "commission_rate", "unit_shipping"])
+
+    out = pd.DataFrame({
+        "sku_key": df[sku_col].apply(clean_sku),
+        "unit_cost": df[cost_col].apply(to_float) if cost_col else 0.0,
+        "commission_rate": df[comm_col].apply(to_float) if comm_col else 0.0,
+        "unit_shipping": df[ship_col].apply(to_float) if ship_col else 0.0,
+    })
+    out["commission_rate"] = out["commission_rate"].apply(lambda x: x / 100 if x > 1 else x)
+    out = out[out["sku_key"] != ""].drop_duplicates("sku_key", keep="last")
+    return out
+
+
+@st.cache_data(show_spinner=False)
+def load_shopify_orders() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    debug_rows = []
+    frames = []
+
+    if not SHOPIFY_DIR.exists():
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame([{
+            "file": "",
+            "status": "ERROR",
+            "rows": 0,
+            "notes": f"Shopify klasörü bulunamadı: {SHOPIFY_DIR}",
+        }])
+
+    for path in sorted(SHOPIFY_DIR.glob("*.csv")):
+        if not is_shopify_order_file(path):
             continue
 
-        df = read_csv_flexible(path)
-        if df.empty:
-            continue
-
-        name_col = find_col(df, ["Name"])
-        created_col = find_col(df, ["Created at"])
-        total_col = find_col(df, ["Total"])
-        refund_col = find_col(df, ["Refunded Amount"])
-        cancelled_col = find_col(df, ["Cancelled at"])
-        financial_col = find_col(df, ["Financial Status"])
-        product_col = find_col(df, ["Lineitem name"])
-        qty_col = find_col(df, ["Lineitem quantity"])
-        sku_col = find_col(df, ["Lineitem sku"])
-        price_col = find_col(df, ["Lineitem price"])
-
-        if not name_col or not created_col or not total_col:
-            continue
-
-        tmp = pd.DataFrame({
-            "platform": "Shopify",
-            "order_id": df[name_col].astype(str),
-            "order_date": pd.to_datetime(df[created_col], errors="coerce", utc=True).dt.tz_localize(None),
-            "net_sales": df[total_col].apply(to_float),
-            "refund": df[refund_col].apply(to_float) if refund_col else 0.0,
-            "cancelled_at": pd.to_datetime(df[cancelled_col], errors="coerce", utc=True).dt.tz_localize(None) if cancelled_col else pd.NaT,
-            "financial_status": df[financial_col].astype(str) if financial_col else "",
-            "source_file": path.name,
+        df, enc, sep = read_shopify_orders(path)
+        debug_rows.append({
+            "file": path.name,
+            "status": "OK" if not df.empty else "ERROR",
+            "rows": len(df),
+            "cols": len(df.columns),
+            "encoding": enc,
+            "separator": sep,
         })
-        tmp["is_cancelled"] = tmp["cancelled_at"].notna() | tmp["financial_status"].str.lower().isin(["voided", "void"])
-        tmp.loc[tmp["is_cancelled"], "net_sales"] = 0.0
-        tmp["net_sales"] = tmp["net_sales"] - tmp["refund"].fillna(0.0)
+        if df.empty:
+            continue
+        df["source_file"] = path.name
+        frames.append(df)
 
-        if product_col:
-            lines = pd.DataFrame({
-                "platform": "Shopify",
-                "order_id": df[name_col].astype(str),
-                "order_date": tmp["order_date"],
-                "product_name": df[product_col].astype(str),
-                "sku": df[sku_col].apply(clean_sku) if sku_col else "",
-                "qty": df[qty_col].apply(to_float) if qty_col else 1.0,
-                "line_revenue": df[price_col].apply(to_float) * (df[qty_col].apply(to_float) if qty_col else 1.0) if price_col else 0.0,
-                "source_file": path.name,
-            })
-            lines.loc[tmp["is_cancelled"], ["qty", "line_revenue"]] = 0.0
-            line_rows.append(lines)
+    debug = pd.DataFrame(debug_rows)
 
-        orders_rows.append(tmp)
+    if not frames:
+        return pd.DataFrame(), pd.DataFrame(), debug
 
-    if orders_rows:
-        orders = pd.concat(orders_rows, ignore_index=True)
-        orders = orders.drop_duplicates(subset=["order_id", "order_date", "net_sales"], keep="first")
-        order_summary = orders.groupby("order_id", as_index=False).agg(
-            platform=("platform", "first"),
-            order_date=("order_date", "first"),
-            net_sales=("net_sales", "first"),
-            source_file=("source_file", "first"),
-        )
-    else:
-        order_summary = pd.DataFrame(columns=["platform", "order_id", "order_date", "net_sales", "source_file"])
+    raw = pd.concat(frames, ignore_index=True)
 
-    lines_df = pd.concat(line_rows, ignore_index=True) if line_rows else pd.DataFrame(
-        columns=["platform", "order_id", "order_date", "product_name", "sku", "qty", "line_revenue", "source_file"]
+    for col in [
+        "Total", "Subtotal", "Shipping", "Taxes", "Discount Amount", "Refunded Amount",
+        "Lineitem quantity", "Lineitem price", "Lineitem discount"
+    ]:
+        if col not in raw.columns:
+            raw[col] = 0.0
+        raw[col] = raw[col].apply(to_float)
+
+    for col in [
+        "Paid at", "Cancelled at", "Financial Status", "Fulfillment Status",
+        "Currency", "Payment Method", "Billing City", "Source", "Lineitem sku"
+    ]:
+        if col not in raw.columns:
+            raw[col] = ""
+
+    raw["order_name"] = raw["Name"].fillna("").astype(str)
+    raw["order_date"] = pd.to_datetime(raw["Created at"], errors="coerce", utc=True).dt.tz_localize(None)
+    raw["cancelled_at"] = pd.to_datetime(raw["Cancelled at"], errors="coerce", utc=True).dt.tz_localize(None)
+    raw["financial_status"] = raw["Financial Status"].fillna("").astype(str).str.lower()
+    raw["fulfillment_status"] = raw["Fulfillment Status"].fillna("").astype(str).str.lower()
+    raw = raw[raw["order_name"].str.strip() != ""].copy()
+
+    dedupe_cols = [c for c in [
+        "Name", "Created at", "Lineitem name", "Lineitem sku",
+        "Lineitem quantity", "Lineitem price", "Total"
+    ] if c in raw.columns]
+    raw = raw.drop_duplicates(subset=dedupe_cols, keep="first")
+
+    orders = raw.groupby("order_name", as_index=False).agg(
+        platform=("source_file", lambda x: "Shopify"),
+        order_date=("order_date", "first"),
+        cancelled_at=("cancelled_at", "first"),
+        financial_status=("financial_status", "first"),
+        fulfillment_status=("fulfillment_status", "first"),
+        total=("Total", "first"),
+        refunded_amount=("Refunded Amount", "first"),
+        source_file=("source_file", "first"),
     )
+    orders["is_cancelled"] = orders["cancelled_at"].notna() | orders["financial_status"].isin(["voided", "void", "cancelled", "canceled"])
+    orders["net_sales"] = orders["total"] - orders["refunded_amount"]
+    orders.loc[orders["is_cancelled"], "net_sales"] = 0.0
+    orders["order_count"] = (~orders["is_cancelled"]).astype(int)
 
-    # Cost table
-    cost_files = [p for p in list_csvs(SHOPIFY_DIR) if "maliyet" in p.name.lower()]
-    costs = pd.DataFrame(columns=["sku", "unit_cost", "commission_rate", "shipping_cost"])
-    if cost_files:
-        cdf = read_csv_flexible(cost_files[0])
-        if not cdf.empty:
-            sku_col = find_col(cdf, ["SKU"])
-            cost_col = find_col(cdf, ["Maliyet", "Cost"])
-            comm_col = find_col(cdf, ["Komisyon"])
-            ship_col = find_col(cdf, ["Kargo", "Shipping"])
-            if sku_col:
-                costs = pd.DataFrame({
-                    "sku": cdf[sku_col].apply(clean_sku),
-                    "unit_cost": cdf[cost_col].apply(to_float) if cost_col else 0.0,
-                    "commission_rate": cdf[comm_col].apply(to_float) if comm_col else 0.0,
-                    "shipping_cost": cdf[ship_col].apply(to_float) if ship_col else 0.0,
-                }).drop_duplicates("sku", keep="last")
+    lines = raw.copy()
+    lines["platform"] = "Shopify"
+    lines["sku_key"] = lines["Lineitem sku"].apply(clean_sku)
+    lines["product_name"] = lines["Lineitem name"].fillna("").astype(str)
+    lines["qty"] = lines["Lineitem quantity"].apply(to_float)
+    lines["line_revenue"] = lines["Lineitem price"].apply(to_float) * lines["qty"] - lines["Lineitem discount"].apply(to_float)
+    lines["is_cancelled"] = lines["cancelled_at"].notna() | lines["financial_status"].isin(["voided", "void", "cancelled", "canceled"])
+    lines.loc[lines["is_cancelled"], ["qty", "line_revenue"]] = 0.0
+    lines = lines[["platform", "order_name", "order_date", "sku_key", "product_name", "qty", "line_revenue", "source_file"]].copy()
 
-    if not lines_df.empty and not costs.empty:
-        lines_df = lines_df.merge(costs, on="sku", how="left")
-        lines_df["unit_cost"] = lines_df["unit_cost"].fillna(0.0)
-        lines_df["commission_rate"] = lines_df["commission_rate"].fillna(0.0)
-        lines_df["shipping_cost"] = lines_df["shipping_cost"].fillna(0.0)
-        lines_df["gross_profit"] = (
-            lines_df["line_revenue"]
-            - (lines_df["unit_cost"] + lines_df["shipping_cost"]) * lines_df["qty"]
-            - lines_df["line_revenue"] * lines_df["commission_rate"]
-        )
-    elif not lines_df.empty:
-        lines_df["gross_profit"] = lines_df["line_revenue"] * 0.45
-    else:
-        lines_df["gross_profit"] = []
-
-    return order_summary, lines_df, costs
+    return orders, lines, debug
 
 
 # =========================================================
-# LOAD TRENDYOL
+# TRENDYOL / HEPSIBURADA BASIC LOADERS
 # =========================================================
 @st.cache_data(show_spinner=False)
-def load_trendyol_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    order_rows = []
+def load_trendyol_basic() -> tuple[pd.DataFrame, pd.DataFrame]:
+    rows = []
+    if not TRENDYOL_DIR.exists():
+        return pd.DataFrame(), pd.DataFrame()
 
-    for path in list_csvs(TRENDYOL_DIR):
-        lname = path.name.lower()
-        if "tedarikci_siparisleri" not in normalize_text(lname) and "siparis" not in normalize_text(lname):
+    for path in TRENDYOL_DIR.glob("*.csv"):
+        name = normalize_text(path.name)
+        if "tedarikci siparisleri" not in name and "siparis" not in name:
             continue
 
-        df = read_csv_flexible(path)
+        df, _, _ = read_csv_flexible(path)
         if df.empty:
             continue
 
-        # Bazı Trendyol raporlarında ilk satır açıklama oluyor; tekrar skiprows dene.
-        if not find_col(df, ["Sipariş Tarihi", "Siparis Tarihi"]):
-            try:
-                df2 = pd.read_csv(path, sep=";", encoding="utf-8", dtype=str, skiprows=1, low_memory=False)
-                if df2.shape[1] > 1:
-                    df = df2
-            except Exception:
-                pass
-
-        date_col = find_col(df, ["Sipariş Tarihi", "Siparis Tarihi"])
-        order_col = find_col(df, ["Sipariş Numarası", "Siparis Numarasi"])
-        qty_col = find_col(df, ["Adet"])
-        status_col = find_col(df, ["Sipariş Statüsü", "Siparis Statusu"])
-        sku_col = find_col(df, ["Barkod", "SKU"])
+        date_col = find_col(df, ["Sipariş Tarihi", "Siparis Tarihi", "Tarih"])
+        order_col = find_col(df, ["Sipariş Numarası", "Siparis Numarasi", "Order"])
         product_col = find_col(df, ["Ürün Ad", "Urun Ad", "Product"])
-        revenue_col = find_col(df, ["Faturalanacak Tutar", "Satış Tutarı", "Satis Tutari"])
+        qty_col = find_col(df, ["Adet", "Quantity"])
+        revenue_col = find_col(df, ["Faturalanacak Tutar", "Satış Tutarı", "Satis Tutari", "Tutar"])
+        sku_col = find_col(df, ["Barkod", "SKU"])
 
-        if not order_col or not revenue_col:
+        if not revenue_col:
             continue
 
         tmp = pd.DataFrame({
             "platform": "Trendyol",
-            "order_id": df[order_col].astype(str),
+            "order_name": df[order_col].astype(str) if order_col else path.stem,
             "order_date": pd.to_datetime(df[date_col], errors="coerce", dayfirst=True) if date_col else pd.NaT,
-            "product_name": df[product_col].astype(str) if product_col else "",
-            "sku": df[sku_col].apply(clean_sku) if sku_col else "",
+            "product_name": df[product_col].astype(str) if product_col else "Trendyol Product",
+            "sku_key": df[sku_col].apply(clean_sku) if sku_col else "",
             "qty": df[qty_col].apply(to_float) if qty_col else 1.0,
             "line_revenue": df[revenue_col].apply(to_float),
-            "status": df[status_col].astype(str) if status_col else "",
             "source_file": path.name,
         })
-        tmp["is_returned"] = tmp["status"].str.contains("ade|iptal|cancel|return", case=False, na=False)
-        tmp.loc[tmp["is_returned"], ["qty", "line_revenue"]] = 0.0
-        order_rows.append(tmp)
+        rows.append(tmp)
 
-    lines = pd.concat(order_rows, ignore_index=True) if order_rows else pd.DataFrame(
-        columns=["platform", "order_id", "order_date", "product_name", "sku", "qty", "line_revenue", "source_file"]
+    lines = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+    if lines.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    orders = lines.groupby("order_name", as_index=False).agg(
+        platform=("platform", "first"),
+        order_date=("order_date", "first"),
+        net_sales=("line_revenue", "sum"),
+        order_count=("order_name", "nunique"),
+        source_file=("source_file", "first"),
     )
-
-    # Cost table
-    cost_files = [p for p in list_csvs(TRENDYOL_DIR) if "maliyet" in normalize_text(p.name)]
-    costs = pd.DataFrame(columns=["sku", "unit_cost", "commission_rate", "shipping_cost"])
-    if cost_files:
-        cdf = read_csv_flexible(cost_files[0])
-        if not cdf.empty:
-            sku_col = find_col(cdf, ["SKU"])
-            cost_col = find_col(cdf, ["Maliyet", "Cost"])
-            comm_col = find_col(cdf, ["Komisyon"])
-            ship_col = find_col(cdf, ["Kargo", "Shipping"])
-            if sku_col:
-                costs = pd.DataFrame({
-                    "sku": cdf[sku_col].apply(clean_sku),
-                    "unit_cost": cdf[cost_col].apply(to_float) if cost_col else 0.0,
-                    "commission_rate": cdf[comm_col].apply(to_float) if comm_col else 0.0,
-                    "shipping_cost": cdf[ship_col].apply(to_float) if ship_col else 0.0,
-                }).drop_duplicates("sku", keep="last")
-
-    if not lines.empty and not costs.empty:
-        lines = lines.merge(costs, on="sku", how="left")
-        lines["unit_cost"] = lines["unit_cost"].fillna(0.0)
-        lines["commission_rate"] = lines["commission_rate"].fillna(0.0)
-        lines["shipping_cost"] = lines["shipping_cost"].fillna(0.0)
-        lines["gross_profit"] = (
-            lines["line_revenue"]
-            - (lines["unit_cost"] + lines["shipping_cost"]) * lines["qty"]
-            - lines["line_revenue"] * lines["commission_rate"]
-        )
-    elif not lines.empty:
-        lines["gross_profit"] = lines["line_revenue"] * 0.45
-    else:
-        lines["gross_profit"] = []
-
-    if not lines.empty:
-        orders = lines.groupby("order_id", as_index=False).agg(
-            platform=("platform", "first"),
-            order_date=("order_date", "first"),
-            net_sales=("line_revenue", "sum"),
-            source_file=("source_file", "first"),
-        )
-    else:
-        orders = pd.DataFrame(columns=["platform", "order_id", "order_date", "net_sales", "source_file"])
-
-    # Manual weekly ads
-    ads = pd.DataFrame(columns=["platform", "date", "spend", "attributed_revenue", "campaign_name"])
-    weekly_file = TRENDYOL_DIR / "manual_weekly_trendyol_ads.csv"
-    if weekly_file.exists():
-        wdf = read_csv_flexible(weekly_file)
-        if not wdf.empty:
-            week_col = find_col(wdf, ["week_start", "Hafta Başlangıç", "Hafta Baslangic"])
-            spend_col = find_col(wdf, ["weekly_spend", "Spend", "Harcama"])
-            revenue_col = find_col(wdf, ["weekly_revenue", "Revenue", "Reklam Cirosu", "Total Ad Revenue"])
-            note_col = find_col(wdf, ["note", "campaign", "Açıklama", "Aciklama"])
-            rows = []
-            if week_col and spend_col:
-                for _, r in wdf.iterrows():
-                    start = pd.to_datetime(r.get(week_col), errors="coerce")
-                    if pd.isna(start):
-                        continue
-                    spend = to_float(r.get(spend_col))
-                    revenue = to_float(r.get(revenue_col)) if revenue_col else 0.0
-                    note = str(r.get(note_col, "Manual Weekly Spend")) if note_col else "Manual Weekly Spend"
-                    for day in pd.date_range(start, start + pd.Timedelta(days=6), freq="D"):
-                        rows.append({
-                            "platform": "Trendyol",
-                            "date": day,
-                            "spend": spend / 7,
-                            "attributed_revenue": revenue / 7,
-                            "campaign_name": note,
-                        })
-            ads = pd.DataFrame(rows) if rows else ads
-
-    return orders, lines, ads
+    orders["order_count"] = 1
+    return orders, lines
 
 
-# =========================================================
-# LOAD HEPSIBURADA
-# =========================================================
 @st.cache_data(show_spinner=False)
-def load_hepsiburada_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    sales_candidates = []
-
-    for path in list_csvs(HEPSIBURADA_DIR):
-        lname = normalize_text(path.name)
-        if not lname.startswith("hepsiburada"):
-            continue
-        df = read_csv_flexible(path)
-        if df.empty:
-            continue
-
-        sku_col = find_col(df, ["SKU"])
-        product_col = find_col(df, ["Urun Adi", "Ürün Adı", "Product Name"])
-        qty_col = find_col(df, ["Toplam Satis Adedi", "Total Sales Qty", "Satis Miktari"])
-        rev_col = find_col(df, ["Toplam Satis Tutari", "Total Sales Amount"])
-        comm_col = find_col(df, ["Komisyon Tutar", "Commission Amount"])
-
-        if sku_col and product_col and qty_col and rev_col:
-            tmp = pd.DataFrame({
-                "platform": "Hepsiburada",
-                "order_id": path.stem,
-                "order_date": pd.NaT,
-                "product_name": df[product_col].astype(str),
-                "sku": df[sku_col].apply(clean_sku),
-                "qty": df[qty_col].apply(to_float),
-                "line_revenue": df[rev_col].apply(to_float),
-                "commission_amount": df[comm_col].apply(to_float) if comm_col else 0.0,
-                "source_file": path.name,
-            })
-            sales_candidates.append(tmp)
-
-    if sales_candidates:
-        # Aggregate snapshot: en yüksek ciro dosyasını seç, çift sayımı önle.
-        selected = max(sales_candidates, key=lambda x: x["line_revenue"].sum()).copy()
-    else:
-        selected = pd.DataFrame(columns=["platform", "order_id", "order_date", "product_name", "sku", "qty", "line_revenue", "source_file"])
-
-    cost_files = [p for p in list_csvs(HEPSIBURADA_DIR) if "maliyet" in normalize_text(p.name)]
-    costs = pd.DataFrame(columns=["sku", "unit_cost", "commission_rate", "shipping_cost"])
-    if cost_files:
-        cdf = read_csv_flexible(cost_files[0])
-        if not cdf.empty:
-            sku_col = find_col(cdf, ["SKU"])
-            cost_col = find_col(cdf, ["Maliyet", "Cost"])
-            comm_col = find_col(cdf, ["Komisyon oran", "Commission Rate"])
-            ship_col = find_col(cdf, ["Kargo", "Shipping"])
-            if sku_col:
-                costs = pd.DataFrame({
-                    "sku": cdf[sku_col].apply(clean_sku),
-                    "unit_cost": cdf[cost_col].apply(to_float) if cost_col else 0.0,
-                    "commission_rate": cdf[comm_col].apply(to_float) if comm_col else 0.0,
-                    "shipping_cost": cdf[ship_col].apply(to_float) if ship_col else 0.0,
-                }).drop_duplicates("sku", keep="last")
-
-    if not selected.empty and not costs.empty:
-        selected = selected.merge(costs, on="sku", how="left")
-        selected["unit_cost"] = selected["unit_cost"].fillna(0.0)
-        selected["commission_rate"] = selected["commission_rate"].fillna(0.0)
-        selected["shipping_cost"] = selected["shipping_cost"].fillna(0.0)
-        selected["gross_profit"] = (
-            selected["line_revenue"]
-            - (selected["unit_cost"] + selected["shipping_cost"]) * selected["qty"]
-            - selected["line_revenue"] * selected["commission_rate"]
-        )
-    elif not selected.empty:
-        selected["gross_profit"] = selected["line_revenue"] * 0.45
-    else:
-        selected["gross_profit"] = []
-
-    if not selected.empty:
-        orders = pd.DataFrame([{
-            "platform": "Hepsiburada",
-            "order_id": "aggregate_snapshot",
-            "order_date": pd.NaT,
-            "net_sales": float(selected["line_revenue"].sum()),
-            "source_file": selected["source_file"].iloc[0] if "source_file" in selected.columns else "",
-        }])
-    else:
-        orders = pd.DataFrame(columns=["platform", "order_id", "order_date", "net_sales", "source_file"])
-
-    ads = pd.DataFrame(columns=["platform", "date", "spend", "attributed_revenue", "campaign_name"])
-    return orders, selected, ads
-
-
-# =========================================================
-# LOAD KREATIF
-# =========================================================
-@st.cache_data(show_spinner=False)
-def load_creative_data() -> pd.DataFrame:
+def load_hepsiburada_basic() -> tuple[pd.DataFrame, pd.DataFrame]:
     rows = []
+    if not HEPSIBURADA_DIR.exists():
+        return pd.DataFrame(), pd.DataFrame()
 
-    for path in list_csvs(KREATIF_DIR):
-        if path.name.lower() in {"creative_history.csv", "creative_summary.csv", "creative_scorecard.csv"}:
+    for path in HEPSIBURADA_DIR.glob("*.csv"):
+        name = normalize_text(path.name)
+        if "maliyet" in name or "iade" in name:
             continue
-        df = read_csv_flexible(path)
+
+        df, _, _ = read_csv_flexible(path)
         if df.empty:
             continue
 
-        campaign_col = find_col(df, ["Kampanya Adı", "Campaign name", "Campaign"])
-        ad_col = find_col(df, ["Reklam Adı", "Reklamlar", "Ad name", "Ad"])
-        reach_col = find_col(df, ["Erişim", "Reach"])
-        imp_col = find_col(df, ["Gösterim", "Impressions"])
-        result_col = find_col(df, ["Sonuçlar", "Results"])
-        spend_col = find_col(df, ["Harcanan Tutar (TRY)", "Amount spent", "Spend", "Harcama"])
-        purchase_col = find_col(df, ["Alışverişler", "Purchases", "Satın almalar"])
-        roas_col = find_col(df, ["Alışveriş Reklam Harcamasının Getirisi", "Purchase ROAS", "ROAS"])
-        ctr_col = find_col(df, ["CTR", "CTR (Tümü)"])
-        cpc_col = find_col(df, ["CPC"])
-        cpm_col = find_col(df, ["CPM"])
-        freq_col = find_col(df, ["Sıklık", "Frequency"])
-        start_col = find_col(df, ["Rapor Başlangıcı", "Reporting starts"])
-        end_col = find_col(df, ["Rapor Sonu", "Reporting ends"])
-        avg_purchase_value_col = find_col(df, ["Ortalama alışveriş dönüşüm değeri", "Average purchase conversion value"])
+        product_col = find_col(df, ["Ürün Adı", "Urun Adi", "Product"])
+        sku_col = find_col(df, ["SKU"])
+        qty_col = find_col(df, ["Toplam Satis Adedi", "Satış Adedi", "Satis Adedi", "Adet"])
+        revenue_col = find_col(df, ["Toplam Satis Tutari", "Satış Tutarı", "Satis Tutari", "Tutar"])
 
-        if not spend_col:
+        if not product_col or not revenue_col:
             continue
 
         tmp = pd.DataFrame({
-            "campaign_name": df[campaign_col].astype(str) if campaign_col else "Bilinmeyen Kampanya",
-            "creative_name": df[ad_col].astype(str) if ad_col else "Bilinmeyen Kreatif",
-            "reach": df[reach_col].apply(to_float) if reach_col else 0.0,
-            "impressions": df[imp_col].apply(to_float) if imp_col else 0.0,
-            "results": df[result_col].apply(to_float) if result_col else 0.0,
-            "spend": df[spend_col].apply(to_float),
-            "purchases": df[purchase_col].apply(to_float) if purchase_col else 0.0,
-            "roas": df[roas_col].apply(to_float) if roas_col else 0.0,
-            "ctr": df[ctr_col].apply(to_float) if ctr_col else 0.0,
-            "cpc": df[cpc_col].apply(to_float) if cpc_col else 0.0,
-            "cpm": df[cpm_col].apply(to_float) if cpm_col else 0.0,
-            "frequency": df[freq_col].apply(to_float) if freq_col else 0.0,
-            "report_start": pd.to_datetime(df[start_col], errors="coerce") if start_col else pd.NaT,
-            "report_end": pd.to_datetime(df[end_col], errors="coerce") if end_col else pd.NaT,
-            "avg_purchase_value": df[avg_purchase_value_col].apply(to_float) if avg_purchase_value_col else 0.0,
+            "platform": "Hepsiburada",
+            "order_name": path.stem,
+            "order_date": pd.NaT,
+            "product_name": df[product_col].astype(str),
+            "sku_key": df[sku_col].apply(clean_sku) if sku_col else "",
+            "qty": df[qty_col].apply(to_float) if qty_col else 1.0,
+            "line_revenue": df[revenue_col].apply(to_float),
             "source_file": path.name,
         })
-        tmp["attributed_revenue"] = tmp["spend"] * tmp["roas"]
-        tmp.loc[tmp["attributed_revenue"].eq(0), "attributed_revenue"] = tmp["purchases"] * tmp["avg_purchase_value"]
-        tmp["cac"] = tmp.apply(lambda r: safe_divide(r["spend"], r["purchases"]), axis=1)
-        tmp["calculated_roas"] = tmp.apply(lambda r: safe_divide(r["attributed_revenue"], r["spend"]), axis=1)
-        tmp["report_date"] = tmp["report_end"].fillna(tmp["report_start"])
         rows.append(tmp)
 
-    if not rows:
-        return pd.DataFrame(columns=[
-            "campaign_name", "creative_name", "reach", "impressions", "results",
-            "spend", "purchases", "roas", "ctr", "cpc", "cpm", "frequency",
-            "attributed_revenue", "cac", "calculated_roas", "report_date", "source_file"
-        ])
+    lines = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+    if lines.empty:
+        return pd.DataFrame(), pd.DataFrame()
 
-    out = pd.concat(rows, ignore_index=True)
-    out = out[~((out["campaign_name"].fillna("").str.strip() == "") & (out["creative_name"].fillna("").str.strip() == ""))]
+    orders = pd.DataFrame([{
+        "platform": "Hepsiburada",
+        "order_name": "hepsiburada_aggregate",
+        "order_date": pd.NaT,
+        "net_sales": float(lines["line_revenue"].sum()),
+        "order_count": 1,
+        "source_file": ", ".join(lines["source_file"].unique().tolist()[:3]),
+    }])
+    return orders, lines
+
+
+# =========================================================
+# CREATIVE / META LOADER
+# =========================================================
+def normalize_creative_report(df: pd.DataFrame, source_file: str) -> pd.DataFrame:
+    campaign_col = find_col(df, ["Kampanya Adı", "Campaign name", "Campaign", "Kampanya"])
+    ad_col = find_col(df, ["Reklam Adı", "Reklamlar", "Ad name", "Ad"])
+    reach_col = find_col(df, ["Erişim", "Reach"])
+    impressions_col = find_col(df, ["Gösterim", "Impressions"])
+    result_col = find_col(df, ["Sonuçlar", "Results"])
+    spend_col = find_col(df, ["Harcanan Tutar (TRY)", "Amount spent", "Amount spent (TRY)", "Spend", "Harcama"])
+    purchase_col = find_col(df, ["Alışverişler", "Alisverisler", "Purchases", "Website purchases", "Satın almalar", "Satin almalar"])
+    roas_col = find_col(df, ["Alışveriş Reklam Harcamasının Getirisi", "Alisveris Reklam Harcamasinin Getirisi", "Purchase ROAS", "Website purchase ROAS", "ROAS"])
+    revenue_col = find_col(df, ["Website purchases conversion value", "Purchase conversion value", "Purchases conversion value", "Revenue", "Gelir", "Dönüşüm değeri", "Donusum degeri"])
+    ctr_col = find_col(df, ["CTR", "CTR (Tümü)", "CTR (Tumu)"])
+    cpc_col = find_col(df, ["CPC"])
+    cpm_col = find_col(df, ["CPM"])
+    frequency_col = find_col(df, ["Sıklık", "Siklik", "Frequency"])
+    start_col = find_col(df, ["Rapor Başlangıcı", "Rapor Baslangici", "Reporting starts", "Reporting start"])
+    end_col = find_col(df, ["Rapor Sonu", "Reporting ends", "Reporting end"])
+
+    if not spend_col:
+        return pd.DataFrame()
+
+    spend = df[spend_col].apply(to_float)
+    purchases = df[purchase_col].apply(to_float) if purchase_col else pd.Series([0.0] * len(df))
+    roas = df[roas_col].apply(to_float) if roas_col else pd.Series([0.0] * len(df))
+
+    if revenue_col:
+        ad_revenue = df[revenue_col].apply(to_float)
+    else:
+        ad_revenue = spend * roas
+
+    out = pd.DataFrame({
+        "campaign_name": df[campaign_col].astype(str) if campaign_col else source_file,
+        "creative_name": df[ad_col].astype(str) if ad_col else "Unknown Creative",
+        "date": pd.to_datetime(df[end_col], errors="coerce") if end_col else (pd.to_datetime(df[start_col], errors="coerce") if start_col else pd.NaT),
+        "spend": spend,
+        "ad_revenue": ad_revenue,
+        "purchases": purchases,
+        "roas": roas,
+        "reach": df[reach_col].apply(to_float) if reach_col else 0.0,
+        "impressions": df[impressions_col].apply(to_float) if impressions_col else 0.0,
+        "results": df[result_col].apply(to_float) if result_col else 0.0,
+        "ctr": df[ctr_col].apply(to_float) if ctr_col else 0.0,
+        "cpc": df[cpc_col].apply(to_float) if cpc_col else 0.0,
+        "cpm": df[cpm_col].apply(to_float) if cpm_col else 0.0,
+        "frequency": df[frequency_col].apply(to_float) if frequency_col else 0.0,
+        "source_file": source_file,
+    })
+
+    out = out[(out["spend"] > 0) | (out["ad_revenue"] > 0) | (out["purchases"] > 0)].copy()
     return out.reset_index(drop=True)
 
 
+@st.cache_data(show_spinner=False)
+def load_creative_ads() -> tuple[pd.DataFrame, pd.DataFrame]:
+    rows = []
+    debug = []
+
+    if not KREATIF_DIR.exists():
+        return pd.DataFrame(), pd.DataFrame([{
+            "file": "",
+            "status": "ERROR",
+            "rows": 0,
+            "notes": f"Kreatif_Takip klasörü bulunamadı: {KREATIF_DIR}",
+        }])
+
+    skip_names = {"creative_history.csv", "creative_summary.csv", "creative_scorecard.csv"}
+
+    for path in sorted(KREATIF_DIR.glob("*.csv")):
+        if path.name.lower() in skip_names:
+            continue
+
+        df, enc, sep = read_csv_flexible(path)
+        if df.empty:
+            debug.append({"file": path.name, "status": "ERROR", "rows": 0, "notes": "CSV okunamadı"})
+            continue
+
+        norm = normalize_creative_report(df, path.name)
+        if norm.empty:
+            debug.append({"file": path.name, "status": "WARNING", "rows": len(df), "notes": "Meta/kreatif raporu olarak tanınmadı veya spend kolonu yok"})
+            continue
+
+        debug.append({"file": path.name, "status": "OK", "rows": len(norm), "notes": f"Encoding={enc}, sep={sep}"})
+        rows.append(norm)
+
+    ads = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=[
+        "campaign_name", "creative_name", "date", "spend", "ad_revenue", "purchases",
+        "roas", "reach", "impressions", "results", "ctr", "cpc", "cpm", "frequency", "source_file"
+    ])
+    return ads, pd.DataFrame(debug)
+
+
 # =========================================================
-# BUILD MODEL
+# MODEL
 # =========================================================
 @st.cache_data(show_spinner=False)
 def build_model():
-    shopify_orders, shopify_lines, _ = load_shopify_data()
-    trendyol_orders, trendyol_lines, trendyol_ads = load_trendyol_data()
-    hb_orders, hb_lines, hb_ads = load_hepsiburada_data()
-    creative = load_creative_data()
+    shopify_costs = load_shopify_costs()
+    shopify_orders, shopify_lines, shopify_debug = load_shopify_orders()
+    trendyol_orders, trendyol_lines = load_trendyol_basic()
+    hb_orders, hb_lines = load_hepsiburada_basic()
+    creative_ads, creative_debug = load_creative_ads()
 
-    orders = pd.concat([shopify_orders, trendyol_orders, hb_orders], ignore_index=True)
-    lines = pd.concat([shopify_lines, trendyol_lines, hb_lines], ignore_index=True)
-    ads = pd.concat([trendyol_ads, hb_ads], ignore_index=True)
-
-    # Kreatif raporunda reklam harcaması varsa genel reklam performansına dahil et.
-    if not creative.empty:
-        creative_ads = pd.DataFrame({
-            "platform": "Kreatif/Meta",
-            "date": creative["report_date"],
-            "spend": creative["spend"],
-            "attributed_revenue": creative["attributed_revenue"],
-            "campaign_name": creative["campaign_name"],
-        })
-        ads = pd.concat([ads, creative_ads], ignore_index=True)
-
-    # product stock
-    if not lines.empty:
-        lines["inventory_key"] = lines["product_name"].apply(infer_inventory_key)
-        lines["stock_units"] = lines["inventory_key"].map(MANUAL_INVENTORY)
+    if not shopify_lines.empty:
+        shopify_lines = shopify_lines.merge(shopify_costs, on="sku_key", how="left")
+        for col in ["unit_cost", "unit_shipping", "commission_rate"]:
+            shopify_lines[col] = shopify_lines[col].fillna(0.0)
+        shopify_lines["matched_cost"] = shopify_lines["unit_cost"].gt(0)
+        shopify_lines["gross_profit_before_ads"] = (
+            shopify_lines["line_revenue"]
+            - (shopify_lines["unit_cost"] + shopify_lines["unit_shipping"]) * shopify_lines["qty"]
+            - shopify_lines["line_revenue"] * shopify_lines["commission_rate"]
+        )
     else:
-        lines["inventory_key"] = []
-        lines["stock_units"] = []
+        shopify_lines["matched_cost"] = []
+        shopify_lines["gross_profit_before_ads"] = []
+
+    if not shopify_orders.empty and not shopify_lines.empty:
+        profit = shopify_lines.groupby("order_name", as_index=False).agg(
+            gross_profit_before_ads=("gross_profit_before_ads", "sum"),
+            units=("qty", "sum"),
+        )
+        shopify_orders = shopify_orders.merge(profit, on="order_name", how="left")
+        shopify_orders["gross_profit_before_ads"] = shopify_orders["gross_profit_before_ads"].fillna(0.0)
+        shopify_orders["units"] = shopify_orders["units"].fillna(0.0)
+
+    all_orders = pd.concat(
+        [df for df in [shopify_orders, trendyol_orders, hb_orders] if not df.empty],
+        ignore_index=True
+    ) if any(not df.empty for df in [shopify_orders, trendyol_orders, hb_orders]) else pd.DataFrame()
+
+    all_lines = pd.concat(
+        [df for df in [shopify_lines, trendyol_lines, hb_lines] if not df.empty],
+        ignore_index=True
+    ) if any(not df.empty for df in [shopify_lines, trendyol_lines, hb_lines]) else pd.DataFrame()
+
+    issues = []
+    if shopify_orders.empty:
+        issues.append("Shopify sipariş verisi okunamadı. Net ciro Shopify dosyasından alınmalıdır.")
+    if shopify_costs.empty:
+        issues.append("Shopify maliyet tablosu okunamadı. Kâr hesabı eksik olabilir.")
+    if creative_ads.empty:
+        issues.append("Kreatif_Takip klasöründen Meta reklam/kreatif verisi okunamadı. ROAS ve reklam harcaması eksik kalır.")
 
     return {
-        "orders": orders,
-        "lines": lines,
-        "ads": ads,
-        "creative": creative,
+        "shopify_orders": shopify_orders,
+        "shopify_lines": shopify_lines,
+        "shopify_costs": shopify_costs,
+        "shopify_debug": shopify_debug,
+        "trendyol_orders": trendyol_orders,
+        "hepsiburada_orders": hb_orders,
+        "orders": all_orders,
+        "lines": all_lines,
+        "creative_ads": creative_ads,
+        "creative_debug": creative_debug,
+        "issues": issues,
     }
 
 
 model = build_model()
+
+shopify_orders = model["shopify_orders"]
+shopify_lines = model["shopify_lines"]
+shopify_costs = model["shopify_costs"]
+shopify_debug = model["shopify_debug"]
+trendyol_orders = model["trendyol_orders"]
+hepsiburada_orders = model["hepsiburada_orders"]
 orders_all = model["orders"]
 lines_all = model["lines"]
-ads_all = model["ads"]
-creative_all = model["creative"]
+creative_ads_all = model["creative_ads"]
+creative_debug = model["creative_debug"]
+issues = model["issues"]
 
 
 # =========================================================
-# SIDEBAR INPUTS
+# SIDEBAR
 # =========================================================
+date_sources = []
+if not orders_all.empty and "order_date" in orders_all.columns:
+    date_sources.append(pd.to_datetime(orders_all["order_date"], errors="coerce").dropna())
+if not creative_ads_all.empty and "date" in creative_ads_all.columns:
+    date_sources.append(pd.to_datetime(creative_ads_all["date"], errors="coerce").dropna())
+
+if date_sources and any(len(s) for s in date_sources):
+    all_dates = pd.concat([s for s in date_sources if len(s)], ignore_index=True)
+    min_date = all_dates.min().date()
+    max_date = all_dates.max().date()
+else:
+    min_date = max_date = pd.Timestamp.today().date()
+
 with st.sidebar:
     st.header("AI Varsayımları")
+    all_time = st.toggle("Tüm Zamanlar", value=True)
+    start_date = st.date_input("Başlangıç", value=min_date, min_value=min_date, max_value=max_date, disabled=all_time)
+    end_date = st.date_input("Bitiş", value=max_date, min_value=min_date, max_value=max_date, disabled=all_time)
 
-    monthly_revenue_target = st.number_input(
-        "Aylık Net Ciro Hedefi (TL)",
-        min_value=0.0,
-        value=500000.0,
-        step=50000.0,
-        format="%.2f",
-    )
-    fixed_costs_30d = st.number_input(
-        "30 Günlük Sabit Gider (TL)",
-        min_value=0.0,
-        value=0.0,
-        step=1000.0,
-        format="%.2f",
-    )
-    current_cash = st.number_input(
-        "Mevcut Nakit (TL)",
-        min_value=0.0,
-        value=0.0,
-        step=1000.0,
-        format="%.2f",
-    )
-    planned_stock_purchase = st.number_input(
-        "Planlanan Stok Alımı (TL)",
-        min_value=0.0,
-        value=0.0,
-        step=1000.0,
-        format="%.2f",
-    )
-    new_customer_count = st.number_input(
-        "Yeni Müşteri Sayısı (veri yoksa manuel)",
-        min_value=0,
-        value=0,
-        step=10,
-    )
-    returning_customer_count = st.number_input(
-        "Geri Gelen Müşteri Sayısı (veri yoksa manuel)",
-        min_value=0,
-        value=0,
-        step=10,
-    )
-    avg_purchase_per_customer = st.number_input(
-        "LTV için müşteri başı ort. satın alma adedi",
-        min_value=1.0,
-        value=1.5,
-        step=0.1,
-    )
-    stock_lead_days = st.number_input(
-        "Stok besleme için tedarik süresi (gün)",
-        min_value=1,
-        value=30,
-        step=1,
-    )
-    low_stock_threshold = st.number_input(
-        "Ölü / düşük stok eşiği",
-        min_value=0,
-        value=10,
-        step=1,
-    )
+    monthly_revenue_target = st.number_input("Aylık Net Ciro Hedefi", min_value=0.0, value=500000.0, step=50000.0)
+    fixed_costs_30d = st.number_input("30 Günlük Sabit Gider", min_value=0.0, value=0.0, step=1000.0)
+    current_cash = st.number_input("Mevcut Nakit", min_value=0.0, value=0.0, step=1000.0)
+    planned_stock_purchase = st.number_input("Planlanan Stok Alımı", min_value=0.0, value=0.0, step=1000.0)
+    new_customer_count = st.number_input("Yeni Müşteri Sayısı", min_value=0, value=0, step=10)
+    returning_customer_count = st.number_input("Geri Gelen Müşteri Sayısı", min_value=0, value=0, step=10)
+    avg_purchase_per_customer = st.number_input("LTV için müşteri başı ort. satın alma", min_value=1.0, value=1.5, step=0.1)
+    show_debug = st.checkbox("Veri okuma debug göster", value=True)
+
     selected_report = st.selectbox(
         "AI rapor başlığı seç",
         [
             "Genel Yönetici Özeti",
             "Net Ciro ve Sipariş Yorumu",
-            "Hedef Gerçekleşme Oranı",
             "Anlık Net Kar",
-            "Top-Seller Listesi",
-            "Ölü Stok Alarmı",
             "Kanal Karlılık Kıyaslaması",
             "Kampanya Bazlı ROAS",
             "Kreatif Karnesi",
             "CAC ve Müşteri Edinme Yorumu",
-            "Yeni vs. Geri Gelen Müşteri",
             "Sepet Ortalaması (AOV)",
-            "LTV Yorumu",
-            "İş Birliği Performansı",
-            "Erişim vs. Dönüşüm",
             "30 Günlük Satış Tahmini",
-            "Stok Besleme Planı",
             "Nakit Akış Projeksiyonu",
             "Yapay Zeka Notu",
         ],
     )
 
-    st.markdown("---")
-    st.caption(f"Project root: {PROJECT_DIR}")
 
-
-# =========================================================
-# DATE FILTER
-# =========================================================
-date_candidates = []
-if not orders_all.empty and "order_date" in orders_all.columns:
-    date_candidates.append(pd.to_datetime(orders_all["order_date"], errors="coerce"))
-if not ads_all.empty and "date" in ads_all.columns:
-    date_candidates.append(pd.to_datetime(ads_all["date"], errors="coerce"))
-if not creative_all.empty and "report_date" in creative_all.columns:
-    date_candidates.append(pd.to_datetime(creative_all["report_date"], errors="coerce"))
-
-if date_candidates:
-    all_dates = pd.concat([s.dropna() for s in date_candidates if not s.dropna().empty], ignore_index=True)
-else:
-    all_dates = pd.Series(dtype="datetime64[ns]")
-
-if all_dates.empty:
-    min_date = max_date = pd.Timestamp.today().normalize()
-else:
-    min_date = all_dates.min()
-    max_date = all_dates.max()
-
-top_spacer, start_col, end_col, all_time_col = st.columns([4.5, 1.4, 1.4, 1.0])
-with start_col:
-    start_date = st.date_input("Başlangıç", value=min_date.date(), min_value=min_date.date(), max_value=max_date.date())
-with end_col:
-    end_date = st.date_input("Bitiş", value=max_date.date(), min_value=min_date.date(), max_value=max_date.date())
-with all_time_col:
-    all_time = st.toggle("Tüm Zamanlar", value=True)
-
-def filter_date(df: pd.DataFrame, col: str) -> pd.DataFrame:
-    if df.empty or col not in df.columns or all_time:
+def date_filter(df: pd.DataFrame, col: str) -> pd.DataFrame:
+    if df.empty or all_time or col not in df.columns:
         return df.copy()
     s = pd.Timestamp(min(start_date, end_date))
     e = pd.Timestamp(max(start_date, end_date)) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
@@ -931,96 +774,103 @@ def filter_date(df: pd.DataFrame, col: str) -> pd.DataFrame:
     return df[(d >= s) & (d <= e)].copy()
 
 
-orders = filter_date(orders_all, "order_date")
-lines = filter_date(lines_all, "order_date")
-ads = filter_date(ads_all, "date")
-creative = filter_date(creative_all, "report_date")
-
-period_label = "Tüm Zamanlar" if all_time else f"{min(start_date, end_date)} → {max(start_date, end_date)}"
+shopify_orders = date_filter(shopify_orders, "order_date")
+shopify_lines = date_filter(shopify_lines, "order_date")
+orders_all = date_filter(orders_all, "order_date")
+lines_all = date_filter(lines_all, "order_date")
+creative_ads = date_filter(creative_ads_all, "date")
 
 
 # =========================================================
-# METRICS
+# KPI
 # =========================================================
-total_revenue = float(orders["net_sales"].sum()) if not orders.empty else float(lines["line_revenue"].sum()) if not lines.empty else 0.0
-order_count = int(orders["order_id"].nunique()) if not orders.empty else 0
-aov = safe_divide(total_revenue, order_count)
+# Kritik düzeltme:
+# Net ciro Shopify'dan gelir. Kreatif_Takip sadece Meta/reklam datasıdır.
+shopify_net_revenue = float(shopify_orders["net_sales"].sum()) if not shopify_orders.empty else 0.0
+shopify_order_count = int(shopify_orders["order_count"].sum()) if not shopify_orders.empty and "order_count" in shopify_orders.columns else 0
+shopify_units = float(shopify_lines["qty"].sum()) if not shopify_lines.empty else 0.0
+shopify_aov = safe_divide(shopify_net_revenue, shopify_order_count)
+shopify_gross_profit = float(shopify_lines["gross_profit_before_ads"].sum()) if not shopify_lines.empty and "gross_profit_before_ads" in shopify_lines.columns else 0.0
 
-gross_profit = float(lines["gross_profit"].sum()) if not lines.empty and "gross_profit" in lines.columns else total_revenue * 0.45
-ad_spend = float(ads["spend"].sum()) if not ads.empty else 0.0
-ad_revenue = float(ads["attributed_revenue"].sum()) if not ads.empty else 0.0
-net_profit_now = gross_profit - ad_spend - fixed_costs_30d
+all_net_revenue = float(orders_all["net_sales"].sum()) if not orders_all.empty and "net_sales" in orders_all.columns else shopify_net_revenue
+all_order_count = int(orders_all["order_count"].sum()) if not orders_all.empty and "order_count" in orders_all.columns else shopify_order_count
+
+ad_spend = float(creative_ads["spend"].sum()) if not creative_ads.empty else 0.0
+ad_revenue = float(creative_ads["ad_revenue"].sum()) if not creative_ads.empty else 0.0
+ad_purchases = float(creative_ads["purchases"].sum()) if not creative_ads.empty else 0.0
 overall_roas = safe_divide(ad_revenue, ad_spend)
-cac = safe_divide(ad_spend, new_customer_count) if new_customer_count else safe_divide(ad_spend, float(creative["purchases"].sum()) if not creative.empty and "purchases" in creative.columns else 0)
-target_rate = safe_divide(total_revenue, monthly_revenue_target) * 100 if monthly_revenue_target else 0.0
-ltv = aov * avg_purchase_per_customer
+cac = safe_divide(ad_spend, new_customer_count) if new_customer_count else safe_divide(ad_spend, ad_purchases)
+net_profit_after_ads = shopify_gross_profit - ad_spend
+mer = safe_divide(shopify_net_revenue, ad_spend)
+target_rate = safe_divide(shopify_net_revenue, monthly_revenue_target) * 100 if monthly_revenue_target else 0.0
+ltv = shopify_aov * avg_purchase_per_customer
 
-platform_summary = pd.DataFrame()
-if not orders.empty:
-    platform_summary = orders.groupby("platform", as_index=False).agg(
-        net_revenue=("net_sales", "sum"),
-        orders=("order_id", "nunique"),
-    )
-else:
-    platform_summary = pd.DataFrame(columns=["platform", "net_revenue", "orders"])
+# Channel table
+platform_rows = []
+if not shopify_orders.empty:
+    platform_rows.append({
+        "platform": "Shopify",
+        "net_revenue": shopify_net_revenue,
+        "orders": shopify_order_count,
+        "gross_profit_before_ads": shopify_gross_profit,
+        "ad_spend": ad_spend,
+        "ad_revenue": ad_revenue,
+        "net_profit_after_ads": net_profit_after_ads,
+        "roas": overall_roas,
+        "aov": shopify_aov,
+        "data_source": "Net ciro: Shopify | Reklam: Kreatif_Takip/Meta",
+    })
 
-if not lines.empty:
-    profit_by_platform = lines.groupby("platform", as_index=False).agg(
-        gross_profit=("gross_profit", "sum"),
-        units=("qty", "sum"),
-    )
-    platform_summary = platform_summary.merge(profit_by_platform, on="platform", how="outer").fillna(0.0)
-else:
-    platform_summary["gross_profit"] = 0.0
-    platform_summary["units"] = 0.0
+for name, df in [("Trendyol", trendyol_orders), ("Hepsiburada", hepsiburada_orders)]:
+    if not df.empty and "net_sales" in df.columns:
+        rev = float(df["net_sales"].sum())
+        orders_count = int(df["order_count"].sum()) if "order_count" in df.columns else int(df["order_name"].nunique())
+        platform_rows.append({
+            "platform": name,
+            "net_revenue": rev,
+            "orders": orders_count,
+            "gross_profit_before_ads": 0.0,
+            "ad_spend": 0.0,
+            "ad_revenue": 0.0,
+            "net_profit_after_ads": rev,
+            "roas": 0.0,
+            "aov": safe_divide(rev, orders_count),
+            "data_source": f"Net ciro: {name}",
+        })
 
-if not ads.empty:
-    ads_by_platform = ads.groupby("platform", as_index=False).agg(
-        ad_spend=("spend", "sum"),
-        ad_revenue=("attributed_revenue", "sum"),
-    )
-    platform_summary = platform_summary.merge(ads_by_platform, on="platform", how="outer").fillna(0.0)
-else:
-    platform_summary["ad_spend"] = 0.0
-    platform_summary["ad_revenue"] = 0.0
+platform_summary = pd.DataFrame(platform_rows)
 
-if not platform_summary.empty:
-    platform_summary["net_profit_after_ads"] = platform_summary["gross_profit"] - platform_summary["ad_spend"]
-    platform_summary["aov"] = platform_summary.apply(lambda r: safe_divide(r["net_revenue"], r["orders"]), axis=1)
-    platform_summary["roas"] = platform_summary.apply(lambda r: safe_divide(r["ad_revenue"], r["ad_spend"]), axis=1)
-
-if not lines.empty:
-    product_summary = lines.groupby(["platform", "product_name"], as_index=False).agg(
+if not shopify_lines.empty:
+    product_summary = shopify_lines.groupby(["platform", "product_name", "sku_key"], as_index=False).agg(
         revenue=("line_revenue", "sum"),
         qty=("qty", "sum"),
-        gross_profit=("gross_profit", "sum"),
-        stock_units=("stock_units", "max"),
+        gross_profit_before_ads=("gross_profit_before_ads", "sum"),
+        matched_cost=("matched_cost", "max"),
     ).sort_values(["qty", "revenue"], ascending=False)
 else:
-    product_summary = pd.DataFrame(columns=["platform", "product_name", "revenue", "qty", "gross_profit", "stock_units"])
+    product_summary = pd.DataFrame()
 
-if not creative.empty:
-    creative_summary = creative.groupby(["campaign_name", "creative_name"], as_index=False).agg(
+if not creative_ads.empty:
+    creative_summary = creative_ads.groupby(["campaign_name", "creative_name"], as_index=False).agg(
         spend=("spend", "sum"),
+        ad_revenue=("ad_revenue", "sum"),
+        purchases=("purchases", "sum"),
         reach=("reach", "sum"),
         impressions=("impressions", "sum"),
         results=("results", "sum"),
-        purchases=("purchases", "sum"),
-        attributed_revenue=("attributed_revenue", "sum"),
         ctr=("ctr", "mean"),
         cpc=("cpc", "mean"),
         cpm=("cpm", "mean"),
         frequency=("frequency", "mean"),
     )
-    creative_summary["roas"] = creative_summary.apply(lambda r: safe_divide(r["attributed_revenue"], r["spend"]), axis=1)
+    creative_summary["roas"] = creative_summary.apply(lambda r: safe_divide(r["ad_revenue"], r["spend"]), axis=1)
     creative_summary["cac"] = creative_summary.apply(lambda r: safe_divide(r["spend"], r["purchases"]), axis=1)
 else:
-    creative_summary = pd.DataFrame(columns=["campaign_name", "creative_name", "spend", "reach", "impressions", "results", "purchases", "attributed_revenue", "ctr", "cpc", "cpm", "frequency", "roas", "cac"])
-
+    creative_summary = pd.DataFrame()
 
 
 # =========================================================
-# LIVE AI CHAT HELPERS
+# GEMINI / LOCAL CHAT
 # =========================================================
 def get_secret_value(key: str) -> str:
     try:
@@ -1029,276 +879,185 @@ def get_secret_value(key: str) -> str:
         return ""
 
 
-def compact_table(df: pd.DataFrame, max_rows: int = 12) -> str:
-    if df is None or df.empty:
-        return "Veri yok."
-    view = df.head(max_rows).copy()
-    return view.to_markdown(index=False)
+def build_report_context() -> str:
+    return f"""
+VERİ KAYNAĞI KURALI:
+- Net Ciro, Sipariş Adedi, Units Sold, AOV ve Gross Profit kaynak: Shopify orders ve Shopify maliyet tablosu.
+- Kreatif_Takip sadece Meta reklam/kreatif datasıdır. Kreatif_Takip'ten NET CİRO alınmaz.
+- Reklam harcaması, reklam geliri, ROAS, CAC kaynak: Kreatif_Takip Meta raporları.
 
+SHOPIFY ÖZETİ:
+- Shopify Net Ciro: {money(shopify_net_revenue)}
+- Shopify Sipariş Adedi: {shopify_order_count:,}
+- Shopify Units Sold: {shopify_units:,.0f}
+- Shopify AOV: {money(shopify_aov)}
+- Shopify Gross Profit Before Ads: {money(shopify_gross_profit)}
+- Shopify Net Profit After Ads: {money(net_profit_after_ads)}
+- MER: {mer:.2f}
 
-def build_report_context(
-    platform_summary_df: pd.DataFrame,
-    product_summary_df: pd.DataFrame,
-    creative_summary_df: pd.DataFrame,
-) -> str:
-    top_products = product_summary_df.sort_values(["qty", "revenue"], ascending=False).head(10) if not product_summary_df.empty else pd.DataFrame()
-    top_creatives = creative_summary_df.sort_values(["roas", "purchases"], ascending=False).head(10) if not creative_summary_df.empty else pd.DataFrame()
-    weak_creatives = creative_summary_df.sort_values(["spend", "roas"], ascending=[False, True]).head(10) if not creative_summary_df.empty else pd.DataFrame()
-
-    context = f"""
-RAPOR DÖNEMİ: {period_label}
-
-GENEL KPI'LAR:
-- Net Ciro: {money(total_revenue)}
-- Sipariş Adedi: {order_count:,}
-- Hedef Gerçekleşme: {pct(target_rate)}
-- Anlık Net Kar: {money(net_profit_now)}
-- Brüt Kar: {money(gross_profit)}
+META / KREATİF ÖZETİ:
 - Reklam Harcaması: {money(ad_spend)}
 - Reklam Geliri: {money(ad_revenue)}
 - ROAS: {overall_roas:.2f}
+- Ad Purchases: {ad_purchases:,.0f}
 - CAC: {money(cac)}
-- AOV: {money(aov)}
-- LTV Tahmini: {money(ltv)}
 
-KANAL ÖZETİ:
-{compact_table(platform_summary_df, 10)}
-
-TOP-SELLER ÜRÜNLER:
-{compact_table(top_products[["platform", "product_name", "revenue", "qty", "gross_profit", "stock_units"]] if not top_products.empty else top_products, 10)}
-
-EN GÜÇLÜ KREATİFLER:
-{compact_table(top_creatives[["campaign_name", "creative_name", "spend", "purchases", "attributed_revenue", "roas", "cac", "ctr"]] if not top_creatives.empty else top_creatives, 10)}
-
-KONTROL EDİLECEK KREATİFLER:
-{compact_table(weak_creatives[["campaign_name", "creative_name", "spend", "purchases", "attributed_revenue", "roas", "cac", "ctr"]] if not weak_creatives.empty else weak_creatives, 10)}
-
-KULLANICININ MANUEL VARSAYIMLARI:
-- Aylık Ciro Hedefi: {money(monthly_revenue_target)}
-- 30 Günlük Sabit Gider: {money(fixed_costs_30d)}
+HEDEF / FİNANS:
+- Aylık Net Ciro Hedefi: {money(monthly_revenue_target)}
+- Hedef Gerçekleşme: %{target_rate:.1f}
+- Sabit Gider Varsayımı: {money(fixed_costs_30d)}
 - Mevcut Nakit: {money(current_cash)}
 - Planlanan Stok Alımı: {money(planned_stock_purchase)}
-- Yeni Müşteri: {new_customer_count:,}
-- Geri Gelen Müşteri: {returning_customer_count:,}
-- Stok Tedarik Süresi: {stock_lead_days} gün
+
+KANAL ÖZETİ:
+{compact_table(platform_summary, 10)}
+
+TOP SHOPIFY ÜRÜNLER:
+{compact_table(product_summary[["product_name", "sku_key", "qty", "revenue", "gross_profit_before_ads", "matched_cost"]] if not product_summary.empty else product_summary, 10)}
+
+KREATİF KARNESİ:
+{compact_table(creative_summary[["campaign_name", "creative_name", "spend", "ad_revenue", "purchases", "roas", "cac", "ctr"]] if not creative_summary.empty else creative_summary, 10)}
 """
-    return context
 
 
-def rule_based_chat_answer(user_question: str, context: str) -> str:
-    q = normalize_text(user_question)
+def local_answer(question: str) -> str:
+    q = normalize_text(question)
 
-    if any(k in q for k in ["roas", "kampanya", "reklam"]):
-        if overall_roas >= 3:
-            yorum = "Genel ROAS güçlü. Kazanan kampanya ve kreatiflerde bütçeyi kademeli artırabilirsin."
-        elif overall_roas >= 1.5:
-            yorum = "Genel ROAS orta seviyede. Düşük ROAS kreatifleri ayıklamadan bütçe artırmak riskli olur."
-        else:
-            yorum = "Genel ROAS düşük. Önce kreatif, hedefleme ve ürün sayfası uyumu kontrol edilmeli."
-        return f"{yorum}\n\nMevcut ROAS: **{overall_roas:.2f}**, reklam harcaması: **{money(ad_spend)}**, reklam geliri: **{money(ad_revenue)}**."
+    if any(k in q for k in ["net ciro", "ciro", "revenue", "gelir"]):
+        return (
+            f"Net ciro **Shopify dosyasından** alınıyor: **{money(shopify_net_revenue)}**. "
+            "Kreatif_Takip sadece Meta reklam verisidir; net ciro için kullanılmaz."
+        )
 
-    if any(k in q for k in ["stok", "besleme", "urun", "top seller", "top-seller"]):
+    if any(k in q for k in ["roas", "reklam", "kreatif", "meta"]):
+        return (
+            f"Meta/Kreatif tarafında reklam harcaması **{money(ad_spend)}**, reklam geliri **{money(ad_revenue)}**, "
+            f"ROAS **{overall_roas:.2f}**. Bu veriler **Kreatif_Takip klasöründen** geliyor."
+        )
+
+    if any(k in q for k in ["kar", "profit"]):
+        return (
+            f"Shopify brüt kâr **{money(shopify_gross_profit)}**. "
+            f"Kreatif/Meta reklam harcaması düşüldükten sonra net kâr **{money(net_profit_after_ads)}**."
+        )
+
+    if any(k in q for k in ["urun", "stok", "top seller", "top-seller"]):
         if product_summary.empty:
-            return "Ürün/stok yorumu için yeterli ürün verisi bulunamadı."
-        top = product_summary.sort_values(["qty", "revenue"], ascending=False).head(5)
-        return "Stok ve ürün tarafında ilk odak top-seller ürünler olmalı:\n\n" + compact_table(
-            top[["platform", "product_name", "qty", "revenue", "stock_units"]], 5
-        )
-
-    if any(k in q for k in ["kar", "karlilik", "net kar", "ciro"]):
-        return (
-            f"Net ciro **{money(total_revenue)}**, tahmini brüt kâr **{money(gross_profit)}**, "
-            f"reklam harcaması **{money(ad_spend)}**, sabit gider varsayımı **{money(fixed_costs_30d)}**. "
-            f"Bu varsayımla anlık net kâr **{money(net_profit_now)}**."
-        )
-
-    if any(k in q for k in ["kreatif", "creative", "ctr", "cpc", "cpm"]):
-        if creative_summary.empty:
-            return "Kreatif yorumu için Kreatif_Takip klasöründe okunabilir kreatif raporu bulunamadı."
-        best = creative_summary.sort_values(["roas", "purchases"], ascending=False).head(5)
-        weak = creative_summary.sort_values(["spend", "roas"], ascending=[False, True]).head(5)
-        return (
-            "En güçlü kreatif adayları:\n\n"
-            + compact_table(best[["campaign_name", "creative_name", "spend", "purchases", "roas", "cac", "ctr"]], 5)
-            + "\n\nKontrol edilecek kreatifler:\n\n"
-            + compact_table(weak[["campaign_name", "creative_name", "spend", "purchases", "roas", "cac", "ctr"]], 5)
-        )
-
-    if any(k in q for k in ["nakit", "cash", "projeksiyon"]):
-        days = max((max_date - min_date).days + 1, 1)
-        projected_gross_profit = safe_divide(gross_profit, days) * 30
-        projected_ad_spend = safe_divide(ad_spend, days) * 30
-        projected_cash = current_cash + projected_gross_profit - projected_ad_spend - fixed_costs_30d - planned_stock_purchase
-        return (
-            f"30 günlük basit nakit projeksiyonu: **{money(projected_cash)}**.\n\n"
-            f"Hesap: mevcut nakit {money(current_cash)} + tahmini brüt kâr {money(projected_gross_profit)} "
-            f"- tahmini reklam harcaması {money(projected_ad_spend)} - sabit gider {money(fixed_costs_30d)} "
-            f"- planlanan stok alımı {money(planned_stock_purchase)}."
-        )
+            return "Shopify ürün verisi okunamadı."
+        return "Shopify top ürünler:\n\n" + compact_table(product_summary[["product_name", "qty", "revenue", "gross_profit_before_ads"]], 8)
 
     return (
-        "Raporlara göre genel özet:\n\n"
-        + create_general_note()
-        + "\n\nDaha net cevap için sorunuzu örneğin 'hangi kreatifi durdurmalıyım?', 'stokta ne almalıyım?', 'ROAS neden düşük?' gibi sorabilirsiniz."
+        f"Genel özet: Shopify net ciro **{money(shopify_net_revenue)}**, sipariş **{shopify_order_count:,}**, "
+        f"AOV **{money(shopify_aov)}**, Meta reklam harcaması **{money(ad_spend)}**, ROAS **{overall_roas:.2f}**, "
+        f"net kâr **{money(net_profit_after_ads)}**."
     )
 
 
-def call_gemini_assistant(user_question: str, context: str, model_name: str) -> str:
+def call_gemini(question: str, context: str, model_name: str) -> str:
     api_key = get_secret_value("GEMINI_API_KEY")
     if not api_key:
-        return "Gemini API anahtarı bulunamadı. Streamlit Secrets içine GEMINI_API_KEY eklenirse bu mod çalışır."
+        return "Gemini API anahtarı bulunamadı. Streamlit Secrets içine GEMINI_API_KEY eklenmeli."
 
     try:
         from google import genai
     except Exception as exc:
-        return f"Google GenAI paketi kurulu değil. requirements.txt içine `google-genai` ekle. Teknik hata: {exc}"
+        return f"google-genai paketi kurulu değil. requirements.txt içine google-genai ekle. Hata: {exc}"
 
     prompt = f"""
-Sen IQIBLA Türkiye için çalışan veri analizi asistanısın.
-Aşağıdaki rapor verilerine göre cevap ver.
+Sen IQIBLA Türkiye için çalışan e-ticaret veri analizi asistanısın.
 Cevabın Türkçe, net, yöneticiye uygun ve aksiyon odaklı olsun.
-Bilmediğin veya veri olmayan yerde tahmin uydurma; 'veri eksik' de.
 
+ÇOK ÖNEMLİ VERİ KURALI:
+Net ciroyu Kreatif_Takip'ten alma.
+Net ciro / sipariş / Shopify kârı Shopify verisinden gelir.
+Kreatif_Takip sadece Meta reklam/kreatif verisidir: reklam harcaması, reklam geliri, ROAS, CAC, kreatif performansı.
+
+Aşağıdaki rapor özetine göre cevap ver:
 {context}
 
-KULLANICI SORUSU:
-{user_question}
+Kullanıcı sorusu:
+{question}
 """
     try:
         client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-        )
+        response = client.models.generate_content(model=model_name, contents=prompt)
         return response.text
     except Exception as exc:
         return f"Gemini yanıtı alınamadı: {exc}"
 
 
-def answer_with_selected_ai(provider: str, user_question: str, context: str, gemini_model: str) -> str:
-    if provider == "Gemini":
-        return call_gemini_assistant(user_question, context, gemini_model)
-    return rule_based_chat_answer(user_question, context)
-
-
-
 # =========================================================
-# AI TEXT GENERATORS
+# TOP KPI
 # =========================================================
-def priority_label(value: str) -> str:
-    return f"**Öncelik Seviyesi:** {value}"
-
-
-def ai_box(title: str, durum: str, guclu: str, risk: str, aksiyon: str, oncelik: str = "Orta"):
-    st.markdown(f"### {title}")
-    st.markdown(f"**Durum Özeti:** {durum}")
-    st.markdown(f"**Güçlü Noktalar:** {guclu}")
-    st.markdown(f"**Riskler:** {risk}")
-    st.markdown(f"**Aksiyon Önerisi:** {aksiyon}")
-    st.markdown(priority_label(oncelik))
-
-
-def create_general_note() -> str:
-    notes = []
-
-    if target_rate >= 100:
-        notes.append("Ciro hedefi yakalanmış veya aşılmış görünüyor; artık odak kâr marjı ve stok sürekliliği olmalı.")
-    elif target_rate >= 70:
-        notes.append("Ciro hedefinin büyük kısmı tamamlanmış; kampanya ve top-seller ürünlerde ölçekleme denenebilir.")
-    else:
-        notes.append("Ciro hedefinin altında kalınmış; reklam verimi, ürün görünürlüğü ve kampanya teklifleri güçlendirilmeli.")
-
-    if overall_roas >= 3:
-        notes.append("Reklam ROAS seviyesi güçlü; kazanan kampanya/kreatiflerde bütçe kademeli artırılabilir.")
-    elif overall_roas >= 1.5:
-        notes.append("ROAS orta seviyede; düşük performanslı kreatifler ayrıştırılmazsa net kâr baskılanabilir.")
-    elif ad_spend > 0:
-        notes.append("ROAS düşük; harcama satışa yeterince dönmüyor, kreatif ve hedefleme kontrol edilmeli.")
-
-    if net_profit_now < 0:
-        notes.append("Anlık net kâr negatif; gider ve reklam harcaması kısa vadede kontrol edilmeli.")
-    else:
-        notes.append("Anlık net kâr pozitif; ölçekleme yapılırken stok ve nakit akışı birlikte izlenmeli.")
-
-    if not product_summary.empty:
-        top = product_summary.iloc[0]
-        notes.append(f"Top-seller ürün: {top['product_name']} ({top['qty']:.0f} adet). Bu ürün için stok besleme önceliği verilmeli.")
-
-    if not creative_summary.empty:
-        best = creative_summary.sort_values(["roas", "purchases"], ascending=False).head(1)
-        if not best.empty:
-            row = best.iloc[0]
-            notes.append(f"En güçlü kreatif/kampanya sinyali: {row['creative_name']} | ROAS {row['roas']:.2f}.")
-
-    return "\n\n".join([f"- {n}" for n in notes])
-
-
-# =========================================================
-# TOP METRICS
-# =========================================================
-st.caption(f"Rapor dönemi: {period_label}")
-
 k1, k2, k3, k4, k5, k6 = st.columns(6)
-k1.metric("Net Ciro", money(total_revenue))
-k2.metric("Sipariş Adedi", f"{order_count:,}")
-k3.metric("Hedef Gerçekleşme", pct(target_rate))
-k4.metric("Anlık Net Kar", money(net_profit_now))
-k5.metric("AOV", money(aov))
-k6.metric("ROAS", f"{overall_roas:.2f}")
+k1.metric("Shopify Net Ciro", money(shopify_net_revenue))
+k2.metric("Shopify Orders", f"{shopify_order_count:,}")
+k3.metric("Shopify AOV", money(shopify_aov))
+k4.metric("Gross Profit", money(shopify_gross_profit))
+k5.metric("Meta Spend", money(ad_spend))
+k6.metric("ROAS", f"{overall_roas:.2f}" if overall_roas else "N/A")
 
 k7, k8, k9, k10 = st.columns(4)
-k7.metric("Reklam Harcaması", money(ad_spend))
-k8.metric("CAC", money(cac))
-k9.metric("LTV Tahmini", money(ltv))
-k10.metric("30 Gün Tahmini Ciro", money((total_revenue / max((max_date - min_date).days + 1, 1)) * 30 if total_revenue else 0.0))
+k7.metric("Net Profit After Ads", money(net_profit_after_ads))
+k8.metric("MER", f"{mer:.2f}" if mer else "N/A")
+k9.metric("CAC", money(cac))
+k10.metric("Hedef Gerçekleşme", f"%{target_rate:.1f}")
+
+if issues:
+    with st.expander("Veri Okuma Uyarıları", expanded=True):
+        for issue in issues:
+            st.info(issue)
+
+if show_debug:
+    with st.expander("Veri kaynakları / debug", expanded=False):
+        st.write("Shopify order debug")
+        st.dataframe(shopify_debug, use_container_width=True, hide_index=True)
+        st.write("Kreatif/Meta debug")
+        st.dataframe(creative_debug, use_container_width=True, hide_index=True)
+        st.write("Kaynak klasörleri")
+        st.code(f"Shopify: {SHOPIFY_DIR}\nKreatif/Meta: {KREATIF_DIR}")
 
 
 # =========================================================
-# LIVE AI CHAT
+# LIVE CHAT
 # =========================================================
 st.markdown(
     """
     <div class="assistant-box">
-        <h3 style="color:white; margin-bottom: 6px;">💬 Canlı Yapay Zeka Asistanı</h3>
+        <h3 style="color:white; margin-bottom: 6px;">💬 Raporlara Göre Gemini Asistanı</h3>
         <p style="color: rgba(255,255,255,0.70); margin-bottom: 0;">
-            Burada Gemini tarzı soru sorabilirsin. Asistan, mevcut Shopify, Trendyol, Hepsiburada ve Kreatif rapor özetlerine göre cevap üretir.
+            Net ciro Shopify'dan, reklam verileri Kreatif_Takip/Meta'dan alınır. Sorularını buna göre yanıtlar.
         </p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-chat_col1, chat_col2 = st.columns([1.4, 1.2])
-with chat_col1:
-    ai_provider = st.selectbox(
-        "AI Motoru",
-        ["Yerel Kural Bazlı", "Gemini"],
-        index=1,
-        help="Gemini için Streamlit Secrets içine GEMINI_API_KEY eklenmeli. API anahtarı yoksa Yerel Kural Bazlı modu seçebilirsin.",
-    )
-with chat_col2:
+c1, c2 = st.columns([1, 1])
+with c1:
+    ai_provider = st.selectbox("AI Motoru", ["Yerel Kural Bazlı", "Gemini"], index=1)
+with c2:
     gemini_model = st.text_input("Gemini model", value="gemini-2.5-flash")
 
-report_context = build_report_context(platform_summary, product_summary, creative_summary)
+context = build_report_context()
 
 quick_questions = [
-    "Genel yönetici özeti çıkar.",
-    "Hangi kreatifleri ölçeklemeliyim, hangilerini durdurmalıyım?",
-    "ROAS düşükse en olası sebep nedir?",
-    "Stokta neyi beslemeliyim?",
-    "Hangi kanal daha kârlı?",
+    "Net ciromuz nereden geliyor ve durum nasıl?",
+    "Kreatif/Meta reklam performansı nasıl?",
+    "ROAS ve net kârı yorumla.",
+    "Hangi kreatifleri ölçeklemeliyim?",
+    "Shopify ürün ve kâr durumunu yorumla.",
     "30 günlük satış ve nakit riskini yorumla.",
 ]
-
-selected_quick_question = st.selectbox("Hazır soru seç", [""] + quick_questions)
+quick = st.selectbox("Hazır soru seç", [""] + quick_questions)
 
 if "ai_chat_history" not in st.session_state:
     st.session_state.ai_chat_history = []
 
-if selected_quick_question and st.button("Hazır soruyu sor"):
-    st.session_state.ai_chat_history.append({"role": "user", "content": selected_quick_question})
+if quick and st.button("Hazır soruyu sor"):
+    st.session_state.ai_chat_history.append({"role": "user", "content": quick})
     with st.spinner("Yapay zeka raporları yorumluyor..."):
-        answer = answer_with_selected_ai(ai_provider, selected_quick_question, report_context, gemini_model)
+        answer = call_gemini(quick, context, gemini_model) if ai_provider == "Gemini" else local_answer(quick)
     st.session_state.ai_chat_history.append({"role": "assistant", "content": answer})
     st.rerun()
 
@@ -1306,425 +1065,160 @@ for msg in st.session_state.ai_chat_history[-8:]:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-user_prompt = st.chat_input("Raporlara göre soru sor: örn. 'Hangi kreatifi kapatmalıyım?'")
+user_prompt = st.chat_input("Raporlara göre soru sor...")
 if user_prompt:
     st.session_state.ai_chat_history.append({"role": "user", "content": user_prompt})
     with st.chat_message("user"):
         st.markdown(user_prompt)
+
     with st.spinner("Yapay zeka raporları yorumluyor..."):
-        answer = answer_with_selected_ai(ai_provider, user_prompt, report_context, gemini_model)
+        answer = call_gemini(user_prompt, context, gemini_model) if ai_provider == "Gemini" else local_answer(user_prompt)
+
     st.session_state.ai_chat_history.append({"role": "assistant", "content": answer})
     with st.chat_message("assistant"):
         st.markdown(answer)
 
 with st.expander("AI'ın kullandığı rapor özetini göster"):
-    st.code(report_context)
-
-st.divider()
+    st.code(context)
 
 
 # =========================================================
-# SELECTED AI REPORT
+# SELECTED REPORT + TABS
 # =========================================================
 st.divider()
-st.subheader(f"Seçili AI Yorumu: {selected_report}")
+st.subheader(f"Seçili Rapor: {selected_report}")
 
 if selected_report == "Net Ciro ve Sipariş Yorumu":
-    durum = f"Toplam net ciro {money(total_revenue)}, sipariş adedi {order_count:,}, AOV {money(aov)}."
-    guclu = "Ciro ve sipariş aynı anda artıyorsa kanal talebi güçlüdür. AOV yüksekse sepet kalitesi iyi demektir."
-    risk = "Sipariş artıp kâr artmıyorsa komisyon, ürün maliyeti, kargo veya reklam harcaması kârlılığı eritiyor olabilir."
-    aksiyon = "Ciroyu platform bazında takip et; düşük AOV olan kanalda bundle, hediye kutusu veya minimum sepet kampanyası dene."
-    ai_box("Net Ciro ve Sipariş Yorumu", durum, guclu, risk, aksiyon)
+    st.markdown(f"""
+**Durum Özeti:** Net ciro Shopify dosyasından geliyor: **{money(shopify_net_revenue)}**.  
+**Sipariş:** {shopify_order_count:,}  
+**AOV:** {money(shopify_aov)}  
 
-elif selected_report == "Hedef Gerçekleşme Oranı":
-    durum = f"Aylık hedef {money(monthly_revenue_target)}, gerçekleşen net ciro {money(total_revenue)}, gerçekleşme oranı {pct(target_rate)}."
-    guclu = "Hedefe yaklaşan kanallarda mevcut trafik ve ürün uyumu güçlüdür."
-    risk = "Hedef düşük kalırsa ay sonuna doğru agresif reklam harcaması kârı bozabilir."
-    aksiyon = "Hedefin altındaysa top-seller ürünleri öne çıkar, düşük ROAS kreatifleri durdur, yüksek dönüşümlü kanala bütçe kaydır."
-    ai_box("Hedef Gerçekleşme Oranı", durum, guclu, risk, aksiyon, "Yüksek" if target_rate < 70 else "Orta")
+**Önemli düzeltme:** Kreatif_Takip net ciro kaynağı değildir. Kreatif_Takip sadece Meta reklam verisidir.
+""")
 
 elif selected_report == "Anlık Net Kar":
-    durum = f"Tahmini brüt kâr {money(gross_profit)}, reklam harcaması {money(ad_spend)}, sabit gider {money(fixed_costs_30d)}, anlık net kâr {money(net_profit_now)}."
-    guclu = "Net kâr pozitifse operasyon ölçeklemeye daha uygundur."
-    risk = "Net kâr negatifse ciro büyüse bile nakit çıkışı artabilir."
-    aksiyon = "Kârı düşüren kanalı tespit et; maliyeti yüksek SKU'ları ve düşük ROAS kampanyaları ayrı incele."
-    ai_box("Anlık Net Kar", durum, guclu, risk, aksiyon, "Yüksek" if net_profit_now < 0 else "Orta")
+    st.markdown(f"""
+**Shopify Gross Profit Before Ads:** {money(shopify_gross_profit)}  
+**Meta Spend / Kreatif_Takip:** {money(ad_spend)}  
+**Net Profit After Ads:** {money(net_profit_after_ads)}  
 
-elif selected_report == "Top-Seller Listesi":
-    st.markdown("### Top-Seller Listesi")
-    if product_summary.empty:
-        st.info("Top-seller için ürün satış verisi bulunamadı.")
-    else:
-        st.dataframe(
-            product_summary.head(20).style.format({
-                "revenue": "{:,.2f} TL",
-                "qty": "{:,.0f}",
-                "gross_profit": "{:,.2f} TL",
-                "stock_units": "{:,.0f}",
-            }),
-            use_container_width=True,
-            hide_index=True,
-        )
-        top = product_summary.iloc[0]
-        ai_box(
-            "Top-Seller Yorumu",
-            f"En çok satan ürün {top['product_name']} ve satış adedi {top['qty']:.0f}.",
-            "Top-seller ürünler reklam ve stok tarafında önceliklendirilebilir.",
-            "Top-seller ürünün stoğu zayıfsa satış kaçırma riski oluşur.",
-            "Bu ürün için stok, reklam ve kreatif varyasyonlarını ayrı takip et.",
-            "Yüksek",
-        )
-
-elif selected_report == "Ölü Stok Alarmı":
-    st.markdown("### Ölü / Düşük Stok Alarmı")
-    if product_summary.empty:
-        st.info("Stok alarmı için ürün verisi bulunamadı.")
-    else:
-        low_stock = product_summary[product_summary["stock_units"].fillna(999999) <= low_stock_threshold].sort_values("stock_units")
-        no_sales_stock = product_summary[(product_summary["qty"].fillna(0) <= 0) & (product_summary["stock_units"].fillna(0) > low_stock_threshold)]
-        c1, c2 = st.columns(2)
-        with c1:
-            st.write("Düşük stok ürünleri")
-            st.dataframe(low_stock, use_container_width=True, hide_index=True)
-        with c2:
-            st.write("Satışı zayıf / ölü stok adayları")
-            st.dataframe(no_sales_stock, use_container_width=True, hide_index=True)
-        ai_box(
-            "Ölü Stok Alarmı",
-            f"Düşük stok ürün sayısı {len(low_stock)}, satışı zayıf stok adayı {len(no_sales_stock)}.",
-            "Stok görünürlüğü olan ürünlerde besleme kararı daha sağlıklı yapılabilir.",
-            "Top-seller ürünlerde stok azalırsa reklam bütçesi boşa gidebilir; ölü stokta ise nakit bağlanır.",
-            "Düşük stok top-seller ürünleri önceliklendir; satışı zayıf ürünler için indirim veya bundle planı yap.",
-            "Yüksek",
-        )
+Net kâr hesabı: Shopify kârı - Meta reklam harcaması.
+""")
 
 elif selected_report == "Kanal Karlılık Kıyaslaması":
-    st.markdown("### Kanal Karlılık Kıyaslaması")
     if platform_summary.empty:
-        st.info("Kanal kıyaslaması için veri bulunamadı.")
+        st.info("Kanal verisi yok.")
     else:
         st.dataframe(
-            platform_summary.sort_values("net_profit_after_ads", ascending=False).style.format({
+            platform_summary.style.format({
                 "net_revenue": "{:,.2f} TL",
-                "gross_profit": "{:,.2f} TL",
+                "gross_profit_before_ads": "{:,.2f} TL",
                 "ad_spend": "{:,.2f} TL",
                 "ad_revenue": "{:,.2f} TL",
                 "net_profit_after_ads": "{:,.2f} TL",
-                "aov": "{:,.2f} TL",
                 "roas": "{:.2f}",
-                "units": "{:,.0f}",
+                "aov": "{:,.2f} TL",
             }),
             use_container_width=True,
             hide_index=True,
         )
-        best = platform_summary.sort_values("net_profit_after_ads", ascending=False).iloc[0]
-        ai_box(
-            "Kanal Karlılık Yorumu",
-            f"En kârlı kanal şu an {best['platform']} görünüyor.",
-            "Kanal bazlı ayrım bütçe ve stok kararını netleştirir.",
-            "Sadece ciroya göre karar verilirse kârsız kanal büyütülebilir.",
-            "Net kârı yüksek kanala ürün ve reklam önceliği ver; düşük kârlı kanalda maliyetleri kontrol et.",
-            "Yüksek",
-        )
 
 elif selected_report == "Kampanya Bazlı ROAS":
-    st.markdown("### Kampanya Bazlı ROAS")
-    if creative_summary.empty and ads.empty:
-        st.info("Kampanya bazlı ROAS için kreatif veya reklam verisi bulunamadı.")
-    elif not creative_summary.empty:
+    if creative_summary.empty:
+        st.info("Kreatif/Meta verisi yok.")
+    else:
         campaign = creative_summary.groupby("campaign_name", as_index=False).agg(
             spend=("spend", "sum"),
-            revenue=("attributed_revenue", "sum"),
+            ad_revenue=("ad_revenue", "sum"),
             purchases=("purchases", "sum"),
-            reach=("reach", "sum"),
         )
-        campaign["roas"] = campaign.apply(lambda r: safe_divide(r["revenue"], r["spend"]), axis=1)
+        campaign["roas"] = campaign.apply(lambda r: safe_divide(r["ad_revenue"], r["spend"]), axis=1)
         st.dataframe(campaign.sort_values("roas", ascending=False), use_container_width=True, hide_index=True)
-        fig = px.bar(campaign.sort_values("roas", ascending=False).head(15), x="campaign_name", y="roas", title="Kampanya Bazlı ROAS")
-        st.plotly_chart(fig, use_container_width=True)
-    ai_box(
-        "Kampanya Bazlı ROAS Yorumu",
-        f"Genel ROAS {overall_roas:.2f}.",
-        "ROAS yüksek kampanyalar ölçekleme için adaydır.",
-        "Düşük ROAS kampanyalar kârı hızlı şekilde eritebilir.",
-        "ROAS 3+ kampanyaları ölçekle, 1.5 altı kampanyalarda kreatif/hedefleme yenile.",
-        "Yüksek",
-    )
 
 elif selected_report == "Kreatif Karnesi":
-    st.markdown("### Kreatif Karnesi")
     if creative_summary.empty:
-        st.info("Kreatif karnesi için kreatif raporu bulunamadı.")
+        st.info("Kreatif verisi yok.")
     else:
         creative_summary["decision"] = creative_summary.apply(
             lambda r: "Ölçekle" if r["roas"] >= 3 and r["purchases"] >= 1 else ("Durdurmayı Değerlendir" if r["spend"] >= 500 and r["roas"] < 1.5 else "İzle"),
             axis=1,
         )
-        st.dataframe(
-            creative_summary.sort_values(["decision", "roas"], ascending=[True, False]).style.format({
-                "spend": "{:,.2f} TL",
-                "reach": "{:,.0f}",
-                "impressions": "{:,.0f}",
-                "results": "{:,.0f}",
-                "purchases": "{:,.0f}",
-                "attributed_revenue": "{:,.2f} TL",
-                "roas": "{:.2f}",
-                "cac": "{:,.2f} TL",
-                "ctr": "{:.2f}",
-                "cpc": "{:,.2f}",
-                "cpm": "{:,.2f}",
-                "frequency": "{:.2f}",
-            }),
-            use_container_width=True,
-            hide_index=True,
-        )
-        scale_count = int((creative_summary["decision"] == "Ölçekle").sum())
-        stop_count = int((creative_summary["decision"] == "Durdurmayı Değerlendir").sum())
-        ai_box(
-            "Kreatif Karnesi Yorumu",
-            f"Ölçekleme adayı {scale_count}, durdurma/değiştirme adayı {stop_count} kreatif var.",
-            "Kreatif bazlı karar ile reklam bütçesi daha kontrollü yönetilir.",
-            "Aynı kreatif uzun süre dönerse frekans ve yorgunluk riski artar.",
-            "Kazanan kreatiflerin varyasyonlarını üret; düşük ROAS kreatifleri yenile veya durdur.",
-            "Yüksek",
-        )
+        st.dataframe(creative_summary.sort_values(["decision", "roas"], ascending=[True, False]), use_container_width=True, hide_index=True)
 
 elif selected_report == "CAC ve Müşteri Edinme Yorumu":
-    durum = f"CAC yaklaşık {money(cac)}. Reklam harcaması {money(ad_spend)}, yeni müşteri girişi {new_customer_count:,}."
-    guclu = "CAC, LTV'nin altında kaldığında müşteri edinimi sağlıklı kabul edilir."
-    risk = "Yeni müşteri verisi yoksa CAC tahmini eksik kalır. Reklam harcamasını alışveriş sayısına bölmek tam müşteri CAC'i vermez."
-    aksiyon = "Shopify müşteri tipini veya müşteri ID/e-posta bazlı raporu ekleyerek gerçek CAC hesaplamasını güçlendir."
-    ai_box("CAC ve Müşteri Edinme Yorumu", durum, guclu, risk, aksiyon, "Orta")
+    st.markdown(f"""
+**CAC:** {money(cac)}  
+**Ad Spend:** {money(ad_spend)}  
+**Ad Purchases:** {ad_purchases:,.0f}  
 
-elif selected_report == "Yeni vs. Geri Gelen Müşteri":
-    total_customers = new_customer_count + returning_customer_count
-    new_rate = safe_divide(new_customer_count, total_customers) * 100
-    returning_rate = safe_divide(returning_customer_count, total_customers) * 100
-    durum = f"Manuel veriye göre yeni müşteri oranı {pct(new_rate)}, geri gelen müşteri oranı {pct(returning_rate)}."
-    guclu = "Geri gelen müşteri oranı yükselirse reklam maliyeti baskısı azalır."
-    risk = "Bu veri manuel girilmediyse veya müşteri bazlı dosya yoksa analiz sınırlıdır."
-    aksiyon = "Tekrar satın alma için WhatsApp/e-posta akışı, sadakat indirimi ve aksesuar bundle kampanyası kurulabilir."
-    ai_box("Yeni vs. Geri Gelen Müşteri", durum, guclu, risk, aksiyon)
+Yeni müşteri sayısı manuel girilirse CAC daha doğru hesaplanır.
+""")
 
 elif selected_report == "Sepet Ortalaması (AOV)":
-    durum = f"AOV şu an {money(aov)}."
-    guclu = "AOV yüksekse reklam maliyetini taşıma kapasitesi artar."
-    risk = "AOV düşükse aynı reklam harcamasıyla daha düşük kâr oluşur."
-    aksiyon = "Bundle, 2. ürün indirimi, ücretsiz kargo eşiği ve hediye kutusu upsell testleri yap."
-    ai_box("Sepet Ortalaması (AOV)", durum, guclu, risk, aksiyon)
-
-elif selected_report == "LTV Yorumu":
-    durum = f"Tahmini LTV {money(ltv)}. Hesap: AOV x müşteri başı ortalama satın alma adedi."
-    guclu = "LTV yüksekse daha yüksek CAC tolere edilebilir."
-    risk = "Gerçek müşteri tekrar satın alma verisi olmadan LTV tahmini sınırlıdır."
-    aksiyon = "Müşteri bazlı satış geçmişi eklenirse gerçek LTV ve tekrar satın alma oranı hesaplanabilir."
-    ai_box("LTV Yorumu", durum, guclu, risk, aksiyon)
-
-elif selected_report == "İş Birliği Performansı":
-    ai_box(
-        "İş Birliği Performansı",
-        "Bu bölüm için influencer/iş birliği bazlı harcama, kupon kodu, link tıklaması ve satış dosyası gerekir.",
-        "Kupon/link bazlı veri gelirse hangi iş birliğinin satışa döndüğü net ölçülür.",
-        "Sadece erişim/veri ile karar verilirse satış getirmeyen iş birlikleri iyi görünebilir.",
-        "İş birliği raporu için partner adı, harcama/ücret, erişim, tıklama, satış, ciro ve ROAS kolonlarını içeren CSV ekle.",
-        "Orta",
-    )
-
-elif selected_report == "Erişim vs. Dönüşüm":
-    st.markdown("### Erişim vs. Dönüşüm")
-    if creative_summary.empty:
-        st.info("Erişim vs dönüşüm için kreatif raporu bulunamadı.")
-    else:
-        fig = px.scatter(
-            creative_summary,
-            x="reach",
-            y="purchases",
-            size="spend",
-            color="roas",
-            hover_data=["campaign_name", "creative_name", "ctr", "frequency"],
-            title="Erişim vs Satın Alma",
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        weak = creative_summary[(creative_summary["reach"] >= creative_summary["reach"].quantile(0.7)) & (creative_summary["purchases"] <= creative_summary["purchases"].median())]
-        st.write("Yüksek erişim / düşük dönüşüm adayları")
-        st.dataframe(weak, use_container_width=True, hide_index=True)
-        ai_box(
-            "Erişim vs. Dönüşüm Yorumu",
-            f"Yüksek erişim-düşük dönüşüm adayı {len(weak)} kreatif var.",
-            "Erişim güçlüyse kreatif dikkat çekiyor olabilir.",
-            "Dönüşüm düşükse teklif, ürün sayfası, fiyat veya güven sorunu olabilir.",
-            "Yüksek erişim ama düşük satın alma getiren kreatiflerde ürün sayfası ve mesaj uyumunu kontrol et.",
-            "Yüksek",
-        )
+    st.markdown(f"Shopify AOV: **{money(shopify_aov)}**")
 
 elif selected_report == "30 Günlük Satış Tahmini":
-    days = max((max_date - min_date).days + 1, 1)
-    forecast_revenue = safe_divide(total_revenue, days) * 30
-    forecast_orders = safe_divide(order_count, days) * 30
-    forecast_profit = safe_divide(gross_profit, days) * 30 - fixed_costs_30d
-    durum = f"Son veri hızına göre 30 günlük ciro tahmini {money(forecast_revenue)}, sipariş tahmini {forecast_orders:,.0f}, kâr tahmini {money(forecast_profit)}."
-    guclu = "Mevcut satış hızı korunursa planlama için temel tahmin oluşur."
-    risk = "Kampanya, stok ve sezon etkisi tahmini değiştirebilir."
-    aksiyon = "Tahmini top-seller ürünlerin stoklarıyla karşılaştır ve reklam bütçesini kâr hedefiyle sınırla."
-    ai_box("30 Günlük Satış Tahmini", durum, guclu, risk, aksiyon, "Yüksek")
-
-elif selected_report == "Stok Besleme Planı":
-    st.markdown("### Stok Besleme Planı")
-    if product_summary.empty:
-        st.info("Stok besleme planı için ürün verisi yok.")
+    if date_sources and not all_time:
+        days = max((pd.Timestamp(max(start_date, end_date)) - pd.Timestamp(min(start_date, end_date))).days + 1, 1)
     else:
-        days = max((max_date - min_date).days + 1, 1)
-        plan = product_summary.copy()
-        plan["daily_qty"] = plan["qty"] / days
-        plan["needed_for_lead_days"] = plan["daily_qty"] * stock_lead_days
-        plan["recommended_restock"] = (plan["needed_for_lead_days"] - plan["stock_units"].fillna(0)).clip(lower=0)
-        plan = plan.sort_values("recommended_restock", ascending=False)
-        st.dataframe(
-            plan[["platform", "product_name", "qty", "stock_units", "daily_qty", "needed_for_lead_days", "recommended_restock"]].style.format({
-                "qty": "{:,.0f}",
-                "stock_units": "{:,.0f}",
-                "daily_qty": "{:,.2f}",
-                "needed_for_lead_days": "{:,.0f}",
-                "recommended_restock": "{:,.0f}",
-            }),
-            use_container_width=True,
-            hide_index=True,
-        )
-        ai_box(
-            "Stok Besleme Planı",
-            f"Tedarik süresi {stock_lead_days} gün kabul edildi. En yüksek restock ihtiyacı olan ürünler listelendi.",
-            "Satış hızına göre stok besleme, satış kaçırma riskini azaltır.",
-            "Stok verisi eksik ürünlerde öneri hatalı olabilir.",
-            "Top-seller + düşük stok ürünlerini öncele; ölü stok ürünlere yeni alım yapma.",
-            "Yüksek",
-        )
+        valid = pd.to_datetime(shopify_orders["order_date"], errors="coerce").dropna() if not shopify_orders.empty else pd.Series(dtype="datetime64[ns]")
+        days = max((valid.max() - valid.min()).days + 1, 1) if not valid.empty else 1
+    forecast_revenue = safe_divide(shopify_net_revenue, days) * 30
+    forecast_profit = safe_divide(shopify_gross_profit, days) * 30 - safe_divide(ad_spend, days) * 30
+    st.markdown(f"""
+**30 Günlük Shopify Net Ciro Tahmini:** {money(forecast_revenue)}  
+**30 Günlük Net Kâr Tahmini:** {money(forecast_profit)}
+""")
 
 elif selected_report == "Nakit Akış Projeksiyonu":
-    days = max((max_date - min_date).days + 1, 1)
-    projected_gross_profit = safe_divide(gross_profit, days) * 30
+    valid = pd.to_datetime(shopify_orders["order_date"], errors="coerce").dropna() if not shopify_orders.empty else pd.Series(dtype="datetime64[ns]")
+    days = max((valid.max() - valid.min()).days + 1, 1) if not valid.empty else 1
+    projected_gross_profit = safe_divide(shopify_gross_profit, days) * 30
     projected_ad_spend = safe_divide(ad_spend, days) * 30
     projected_cash = current_cash + projected_gross_profit - projected_ad_spend - fixed_costs_30d - planned_stock_purchase
-    durum = f"30 gün sonunda tahmini nakit: {money(projected_cash)}. Mevcut nakit {money(current_cash)}, tahmini brüt kâr {money(projected_gross_profit)}, tahmini reklam harcaması {money(projected_ad_spend)}."
-    guclu = "Nakit projeksiyonu reklam ve stok kararlarını birlikte görmeyi sağlar."
-    risk = "Tahsilat gecikmesi, iade ve ek stok alımı projeksiyonu bozabilir."
-    aksiyon = "Nakit negatife düşüyorsa reklam ölçeklemeyi sınırlı tut, stok alımını top-seller ürünlerle sınırla."
-    ai_box("Nakit Akış Projeksiyonu", durum, guclu, risk, aksiyon, "Yüksek" if projected_cash < 0 else "Orta")
-
-elif selected_report == "Yapay Zeka Notu" or selected_report == "Genel Yönetici Özeti":
-    st.markdown("### Yapay Zeka Notu")
-    st.markdown(create_general_note())
+    st.markdown(f"""
+**30 Gün Sonu Tahmini Nakit:** {money(projected_cash)}  
+Hesap: mevcut nakit + Shopify kâr tahmini - Meta reklam harcaması - sabit gider - stok alımı.
+""")
 
 else:
-    st.info("Bu başlık için yorum hazırlanıyor.")
+    st.markdown(local_answer("genel özet"))
 
 
-# =========================================================
-# FULL DASHBOARD TABS
-# =========================================================
-st.divider()
-
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📊 Genel Veri",
-    "🏪 Kanal Kıyaslama",
-    "📦 Ürün & Stok",
-    "📣 Reklam & Kreatif",
-    "🧪 Veri Durumu",
-])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Shopify", "🎨 Kreatif / Meta", "📦 Ürün", "🧪 Veri Durumu"])
 
 with tab1:
-    st.subheader("Genel Özet")
-    summary_df = pd.DataFrame([
-        {"Metrik": "Net Ciro", "Değer": money(total_revenue)},
-        {"Metrik": "Sipariş Adedi", "Değer": f"{order_count:,}"},
-        {"Metrik": "Hedef Gerçekleşme", "Değer": pct(target_rate)},
-        {"Metrik": "Anlık Net Kar", "Değer": money(net_profit_now)},
-        {"Metrik": "AOV", "Değer": money(aov)},
-        {"Metrik": "ROAS", "Değer": f"{overall_roas:.2f}"},
-        {"Metrik": "CAC", "Değer": money(cac)},
-        {"Metrik": "LTV Tahmini", "Değer": money(ltv)},
-    ])
-    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+    st.subheader("Shopify Kaynaklı Satış Verisi")
+    if shopify_orders.empty:
+        st.warning("Shopify sipariş verisi yok.")
+    else:
+        st.dataframe(shopify_orders.sort_values("order_date", ascending=False), use_container_width=True, hide_index=True)
 
 with tab2:
-    st.subheader("Kanal Karlılık Kıyaslaması")
-    if platform_summary.empty:
-        st.info("Kanal verisi bulunamadı.")
+    st.subheader("Kreatif_Takip Kaynaklı Meta Verisi")
+    if creative_summary.empty:
+        st.warning("Kreatif/Meta verisi yok.")
     else:
-        st.dataframe(
-            platform_summary.sort_values("net_profit_after_ads", ascending=False).style.format({
-                "net_revenue": "{:,.2f} TL",
-                "orders": "{:,.0f}",
-                "gross_profit": "{:,.2f} TL",
-                "units": "{:,.0f}",
-                "ad_spend": "{:,.2f} TL",
-                "ad_revenue": "{:,.2f} TL",
-                "net_profit_after_ads": "{:,.2f} TL",
-                "aov": "{:,.2f} TL",
-                "roas": "{:.2f}",
-            }),
-            use_container_width=True,
-            hide_index=True,
-        )
-        fig = px.bar(platform_summary, x="platform", y="net_profit_after_ads", title="Kanal Bazlı Net Kâr")
-        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(creative_summary.sort_values("spend", ascending=False), use_container_width=True, hide_index=True)
 
 with tab3:
-    st.subheader("Ürün ve Stok")
+    st.subheader("Shopify Ürün ve Kâr")
     if product_summary.empty:
-        st.info("Ürün verisi bulunamadı.")
+        st.warning("Ürün verisi yok.")
     else:
-        st.dataframe(
-            product_summary.head(50).style.format({
-                "revenue": "{:,.2f} TL",
-                "qty": "{:,.0f}",
-                "gross_profit": "{:,.2f} TL",
-                "stock_units": "{:,.0f}",
-            }),
-            use_container_width=True,
-            hide_index=True,
-        )
+        st.dataframe(product_summary, use_container_width=True, hide_index=True)
 
 with tab4:
-    st.subheader("Reklam ve Kreatif")
-    if creative_summary.empty:
-        st.info("Kreatif verisi bulunamadı.")
-    else:
-        st.dataframe(
-            creative_summary.sort_values("roas", ascending=False).style.format({
-                "spend": "{:,.2f} TL",
-                "reach": "{:,.0f}",
-                "impressions": "{:,.0f}",
-                "results": "{:,.0f}",
-                "purchases": "{:,.0f}",
-                "attributed_revenue": "{:,.2f} TL",
-                "ctr": "{:.2f}",
-                "cpc": "{:,.2f}",
-                "cpm": "{:,.2f}",
-                "frequency": "{:.2f}",
-                "roas": "{:.2f}",
-                "cac": "{:,.2f} TL",
-            }),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-with tab5:
-    st.subheader("Veri Durumu")
-    data_status = pd.DataFrame([
-        {"Alan": "Shopify klasörü", "Durum": "Var" if SHOPIFY_DIR.exists() else "Yok", "Yol": str(SHOPIFY_DIR)},
-        {"Alan": "Trendyol klasörü", "Durum": "Var" if TRENDYOL_DIR.exists() else "Yok", "Yol": str(TRENDYOL_DIR)},
-        {"Alan": "Hepsiburada klasörü", "Durum": "Var" if HEPSIBURADA_DIR.exists() else "Yok", "Yol": str(HEPSIBURADA_DIR)},
-        {"Alan": "Kreatif klasörü", "Durum": "Var" if KREATIF_DIR.exists() else "Yok", "Yol": str(KREATIF_DIR)},
-        {"Alan": "Sipariş verisi", "Durum": "Var" if not orders_all.empty else "Eksik", "Yol": "-"},
-        {"Alan": "Ürün verisi", "Durum": "Var" if not lines_all.empty else "Eksik", "Yol": "-"},
-        {"Alan": "Reklam verisi", "Durum": "Var" if not ads_all.empty else "Eksik", "Yol": "-"},
-        {"Alan": "Kreatif verisi", "Durum": "Var" if not creative_all.empty else "Eksik", "Yol": "-"},
+    st.subheader("Veri Kaynakları")
+    status = pd.DataFrame([
+        {"Alan": "Shopify Net Ciro", "Kaynak": str(SHOPIFY_DIR), "Durum": "OK" if not shopify_orders.empty else "Eksik"},
+        {"Alan": "Shopify Maliyet", "Kaynak": str(SHOPIFY_DIR), "Durum": "OK" if not shopify_costs.empty else "Eksik"},
+        {"Alan": "Meta / Kreatif", "Kaynak": str(KREATIF_DIR), "Durum": "OK" if not creative_ads_all.empty else "Eksik"},
+        {"Alan": "Trendyol", "Kaynak": str(TRENDYOL_DIR), "Durum": "OK" if not trendyol_orders.empty else "Opsiyonel/Eksik"},
+        {"Alan": "Hepsiburada", "Kaynak": str(HEPSIBURADA_DIR), "Durum": "OK" if not hepsiburada_orders.empty else "Opsiyonel/Eksik"},
     ])
-    st.dataframe(data_status, use_container_width=True, hide_index=True)
+    st.dataframe(status, use_container_width=True, hide_index=True)
 
-    st.markdown(
-        """
-        **Not:** Bu panel ilk sürümde kural bazlı yapay zeka mantığıyla çalışır. Yani API gerektirmez.  
-        Gemini API anahtarı eklendiğinde canlı AI soru-cevap modu aktif çalışır.
-        """
-    )
+    st.markdown("### Önemli veri kuralı")
+    st.info("Net ciro Shopify dosyasından alınır. Kreatif_Takip yalnızca Meta reklam/kreatif verisi olarak kullanılır.")
