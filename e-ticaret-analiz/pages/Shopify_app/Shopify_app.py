@@ -23,11 +23,13 @@ if "logged_in" not in st.session_state or st.session_state.logged_in is not True
 
 st.title("🟣 SMARTEK360: Shopify Reader & Diagnostic Dashboard")
 st.caption(
-    "Shopify sipariş, maliyet, Meta fatura ve oturum dosyalarını okuyup ana rapor kartlarına aktarır. "
-    "Dosya tanıma ve hata gösterme sistemi dahildir."
+    "Shopify sipariş, maliyet ve oturum dosyalarını okuyup rapora aktarır. "
+    "Reklam harcaması ve reklam geliri Meta/fatura dosyasından değil, Kreatif_Takip klasöründeki kreatif raporlarından alınır."
 )
 
 DATA_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = DATA_DIR.parents[1] if len(DATA_DIR.parents) > 1 else DATA_DIR.parent
+KREATIF_DIR = PROJECT_DIR / "pages" / "Kreatif_Takip"
 
 
 # =========================================================
@@ -154,7 +156,6 @@ def read_shopify_orders(path: Path) -> tuple[pd.DataFrame, str, str]:
     if not df.empty and {"Name", "Created at", "Lineitem name"}.issubset(set(df.columns)):
         return df, enc, sep
 
-    # Fallback: line-by-line csv parser for broken Shopify CSV files
     encodings = ["utf-8-sig", "utf-8", "cp1254", "iso-8859-9", "latin1"]
     for enc in encodings:
         try:
@@ -184,42 +185,6 @@ def read_shopify_orders(path: Path) -> tuple[pd.DataFrame, str, str]:
     return pd.DataFrame(), "", ""
 
 
-def read_meta_billing(path: Path) -> tuple[pd.DataFrame, str]:
-    """
-    Meta invoice file is not a normal CSV from row 1.
-    It contains text headers, then:
-    Tarih,İşlem Kodu,Ödeme Yöntemi,Tutar,Para Birimi
-    """
-    text = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
-    header_idx = None
-    for i, line in enumerate(text):
-        n = normalize_text(line)
-        if "tarih" in n and "tutar" in n and ("para birimi" in n or "odeme" in n):
-            header_idx = i
-            break
-
-    if header_idx is None:
-        df, enc, sep = read_csv_flexible(path)
-        return df, "standard"
-
-    section_lines = []
-    for line in text[header_idx:]:
-        if not line.strip():
-            if len(section_lines) > 1:
-                break
-            continue
-        section_lines.append(line)
-
-    rows = list(csv.reader(section_lines))
-    if len(rows) < 2:
-        return pd.DataFrame(), "billing-header-found-empty"
-
-    header = rows[0]
-    body = rows[1:]
-    df = pd.DataFrame(body, columns=header)
-    return df, "meta-billing-section"
-
-
 def detect_file(path: Path) -> dict:
     name = normalize_text(path.name)
 
@@ -234,19 +199,6 @@ def detect_file(path: Path) -> dict:
             "encoding": enc,
             "separator": sep,
             "notes": "Shopify order export detected.",
-        }
-
-    if "fatura" in name or "billing" in name:
-        bdf, mode = read_meta_billing(path)
-        return {
-            "file": path.name,
-            "type": "meta_billing",
-            "status": "OK" if not bdf.empty else "ERROR",
-            "rows": len(bdf),
-            "cols": len(bdf.columns),
-            "encoding": mode,
-            "separator": "section",
-            "notes": "Meta invoice / billing detected.",
         }
 
     df, enc, sep = read_csv_flexible(path)
@@ -288,16 +240,16 @@ def detect_file(path: Path) -> dict:
             "notes": "Sessions / traffic file detected.",
         }
 
-    if "meta" in name or "campaign" in name or "amount spent" in cols or "harcanan tutar" in cols:
+    if "meta" in name or "campaign" in name or "fatura" in name or "billing" in name:
         return {
             "file": path.name,
-            "type": "meta_campaign",
-            "status": "OK",
+            "type": "ignored_meta",
+            "status": "IGNORED",
             "rows": len(df),
             "cols": len(df.columns),
             "encoding": enc,
             "separator": sep,
-            "notes": "Meta campaign file detected.",
+            "notes": "Shopify panelinde Meta dosyası kullanılmıyor. Reklam verisi Kreatif_Takip klasöründen alınır.",
         }
 
     return {
@@ -325,7 +277,7 @@ def paths_of_type(scan: pd.DataFrame, kind: str) -> list[Path]:
 
 
 # =========================================================
-# LOADERS
+# SHOPIFY LOADERS
 # =========================================================
 @st.cache_data(show_spinner=False)
 def load_costs(scan: pd.DataFrame) -> pd.DataFrame:
@@ -435,7 +387,6 @@ def load_sessions(scan: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
             continue
 
-        # Parse multiple date/session blocks: Day, Online store visitors, Sessions (+ repeated columns)
         cols = list(df.columns)
         for i, col in enumerate(cols):
             if normalize_text(col).startswith("day"):
@@ -461,34 +412,100 @@ def load_sessions(scan: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=["date", "visitors", "sessions", "source_file"])
 
 
+# =========================================================
+# CREATIVE / ADS LOADER
+# =========================================================
+def normalize_creative_report(df: pd.DataFrame, source_file: str) -> pd.DataFrame:
+    campaign_col = find_col(df, ["Kampanya Adı", "Campaign name", "Campaign", "Kampanya"])
+    ad_col = find_col(df, ["Reklam Adı", "Reklamlar", "Ad name", "Ad"])
+    reach_col = find_col(df, ["Erişim", "Reach"])
+    impressions_col = find_col(df, ["Gösterim", "Impressions"])
+    result_col = find_col(df, ["Sonuçlar", "Results"])
+    spend_col = find_col(df, ["Harcanan Tutar (TRY)", "Amount spent", "Amount spent (TRY)", "Spend", "Harcama"])
+    purchase_col = find_col(df, ["Alışverişler", "Alisverisler", "Purchases", "Website purchases", "Satın almalar", "Satin almalar"])
+    roas_col = find_col(df, ["Alışveriş Reklam Harcamasının Getirisi", "Alisveris Reklam Harcamasinin Getirisi", "Purchase ROAS", "Website purchase ROAS", "ROAS"])
+    revenue_col = find_col(df, ["Website purchases conversion value", "Purchase conversion value", "Purchases conversion value", "Revenue", "Gelir", "Dönüşüm değeri", "Donusum degeri"])
+    ctr_col = find_col(df, ["CTR", "CTR (Tümü)", "CTR (Tumu)"])
+    cpc_col = find_col(df, ["CPC"])
+    cpm_col = find_col(df, ["CPM"])
+    frequency_col = find_col(df, ["Sıklık", "Siklik", "Frequency"])
+    start_col = find_col(df, ["Rapor Başlangıcı", "Rapor Baslangici", "Reporting starts", "Reporting start"])
+    end_col = find_col(df, ["Rapor Sonu", "Reporting ends", "Reporting end"])
+
+    if not spend_col:
+        return pd.DataFrame()
+
+    spend = df[spend_col].apply(to_float)
+    purchases = df[purchase_col].apply(to_float) if purchase_col else pd.Series([0.0] * len(df))
+    roas = df[roas_col].apply(to_float) if roas_col else pd.Series([0.0] * len(df))
+
+    if revenue_col:
+        revenue = df[revenue_col].apply(to_float)
+    else:
+        revenue = spend * roas
+
+    out = pd.DataFrame({
+        "campaign_name": df[campaign_col].astype(str) if campaign_col else source_file,
+        "creative_name": df[ad_col].astype(str) if ad_col else "Unknown Creative",
+        "date": pd.to_datetime(df[end_col], errors="coerce") if end_col else (pd.to_datetime(df[start_col], errors="coerce") if start_col else pd.NaT),
+        "spend": spend,
+        "ad_revenue": revenue,
+        "purchases": purchases,
+        "roas": roas,
+        "reach": df[reach_col].apply(to_float) if reach_col else 0.0,
+        "impressions": df[impressions_col].apply(to_float) if impressions_col else 0.0,
+        "results": df[result_col].apply(to_float) if result_col else 0.0,
+        "ctr": df[ctr_col].apply(to_float) if ctr_col else 0.0,
+        "cpc": df[cpc_col].apply(to_float) if cpc_col else 0.0,
+        "cpm": df[cpm_col].apply(to_float) if cpm_col else 0.0,
+        "frequency": df[frequency_col].apply(to_float) if frequency_col else 0.0,
+        "source_file": source_file,
+    })
+
+    out = out[~((out["campaign_name"].fillna("").astype(str).str.strip() == "") & (out["creative_name"].fillna("").astype(str).str.strip() == ""))]
+    out = out[(out["spend"] > 0) | (out["ad_revenue"] > 0) | (out["purchases"] > 0)].copy()
+    return out.reset_index(drop=True)
+
+
 @st.cache_data(show_spinner=False)
-def load_billing(scan: pd.DataFrame) -> pd.DataFrame:
+def load_creative_ads() -> tuple[pd.DataFrame, pd.DataFrame]:
     rows = []
-    for path in paths_of_type(scan, "meta_billing"):
-        df, mode = read_meta_billing(path)
+    debug = []
+
+    if not KREATIF_DIR.exists():
+        return pd.DataFrame(), pd.DataFrame([{
+            "file": "",
+            "status": "ERROR",
+            "rows": 0,
+            "notes": f"Kreatif_Takip klasörü bulunamadı: {KREATIF_DIR}",
+        }])
+
+    skip_names = {"creative_history.csv", "creative_summary.csv", "creative_scorecard.csv"}
+
+    for path in sorted(KREATIF_DIR.glob("*.csv")):
+        if path.name.lower() in skip_names:
+            continue
+
+        df, enc, sep = read_csv_flexible(path)
         if df.empty:
+            debug.append({"file": path.name, "status": "ERROR", "rows": 0, "notes": "CSV okunamadı"})
             continue
 
-        date_col = find_col(df, ["Tarih", "Date"])
-        amount_col = find_col(df, ["Tutar", "Amount"])
-        method_col = find_col(df, ["Ödeme Yöntemi", "Odeme Yontemi", "Payment Method"])
-        code_col = find_col(df, ["İşlem Kodu", "Islem Kodu", "Transaction"])
-
-        if not amount_col:
+        norm = normalize_creative_report(df, path.name)
+        if norm.empty:
+            debug.append({"file": path.name, "status": "WARNING", "rows": len(df), "notes": "Kreatif reklam verisi olarak tanınmadı veya spend kolonu yok"})
             continue
 
-        tmp = pd.DataFrame({
-            "date": pd.to_datetime(df[date_col], errors="coerce", dayfirst=True) if date_col else pd.NaT,
-            "transaction_code": df[code_col].astype(str) if code_col else "",
-            "payment_method": df[method_col].astype(str) if method_col else "",
-            "spend": df[amount_col].apply(to_float),
-            "source_file": path.name,
-            "source_type": "billing",
-        })
-        tmp = tmp[tmp["spend"] > 0].copy()
-        rows.append(tmp)
+        debug.append({"file": path.name, "status": "OK", "rows": len(norm), "notes": f"Encoding={enc}, sep={sep}"})
+        rows.append(norm)
 
-    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=["date", "transaction_code", "payment_method", "spend", "source_file", "source_type"])
+    ads = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=[
+        "campaign_name", "creative_name", "date", "spend", "ad_revenue", "purchases",
+        "roas", "reach", "impressions", "results", "ctr", "cpc", "cpm", "frequency", "source_file"
+    ])
+
+    debug_df = pd.DataFrame(debug)
+    return ads, debug_df
 
 
 # =========================================================
@@ -500,7 +517,7 @@ def build_model():
     costs = load_costs(scan)
     orders, lines, order_debug = load_orders(scan)
     sessions = load_sessions(scan)
-    billing = load_billing(scan)
+    creative_ads, creative_debug = load_creative_ads()
 
     if not lines.empty:
         lines = lines.merge(costs, on="sku_key", how="left")
@@ -530,10 +547,10 @@ def build_model():
         issues.append("Sipariş dosyası okunamadı. Orders export içinde Name, Created at, Lineitem name kolonları olmalı.")
     if costs.empty:
         issues.append("Maliyet tablosu okunamadı veya SKU kolonu bulunamadı.")
-    if billing.empty:
-        issues.append("Meta fatura dosyası okunamadı. Fatura dosyasında Tarih ve Tutar bölümü olmalı.")
     if sessions.empty:
         issues.append("Oturum dosyası okunamadı. Day, Online store visitors, Sessions kolonları bekleniyor.")
+    if creative_ads.empty:
+        issues.append("Kreatif_Takip klasöründen reklam harcaması okunamadı. Kreatif raporunda Harcanan Tutar / ROAS / Alışveriş kolonları bekleniyor.")
 
     return {
         "scan": scan,
@@ -541,8 +558,9 @@ def build_model():
         "orders": orders,
         "lines": lines,
         "sessions": sessions,
-        "billing": billing,
+        "creative_ads": creative_ads,
         "order_debug": order_debug,
+        "creative_debug": creative_debug,
         "issues": issues,
     }
 
@@ -553,8 +571,9 @@ costs = model["costs"]
 orders = model["orders"]
 lines = model["lines"]
 sessions = model["sessions"]
-billing = model["billing"]
+creative_ads = model["creative_ads"]
 order_debug = model["order_debug"]
+creative_debug = model["creative_debug"]
 issues = model["issues"]
 
 
@@ -564,8 +583,8 @@ issues = model["issues"]
 date_sources = []
 if not orders.empty:
     date_sources.append(pd.to_datetime(orders["order_date"], errors="coerce").dropna())
-if not billing.empty:
-    date_sources.append(pd.to_datetime(billing["date"], errors="coerce").dropna())
+if not creative_ads.empty:
+    date_sources.append(pd.to_datetime(creative_ads["date"], errors="coerce").dropna())
 if not sessions.empty:
     date_sources.append(pd.to_datetime(sessions["date"], errors="coerce").dropna())
 
@@ -581,7 +600,6 @@ with st.sidebar:
     all_time = st.toggle("All Time", value=True)
     start_date = st.date_input("Start date", value=min_date, min_value=min_date, max_value=max_date, disabled=all_time)
     end_date = st.date_input("End date", value=max_date, min_value=min_date, max_value=max_date, disabled=all_time)
-    manual_ad_revenue = st.number_input("Manual Total Ad Revenue", min_value=0.0, value=0.0, step=100.0)
     manual_inventory_units = st.number_input("Manual Total Inventory Units", min_value=0, value=0, step=1)
     low_stock_items_manual = st.number_input("Manual Low Stock Items", min_value=0, value=0, step=1)
     show_diagnostic = st.checkbox("Show file diagnostic", value=True)
@@ -599,7 +617,7 @@ def date_filter(df: pd.DataFrame, col: str) -> pd.DataFrame:
 orders_f = date_filter(orders, "order_date")
 lines_f = date_filter(lines, "order_date")
 sessions_f = date_filter(sessions, "date")
-billing_f = date_filter(billing, "date")
+creative_ads_f = date_filter(creative_ads, "date")
 
 
 # =========================================================
@@ -610,9 +628,11 @@ order_count = int(orders_f["order_count"].sum()) if not orders_f.empty and "orde
 units_sold = float(lines_f["qty"].sum()) if not lines_f.empty else 0.0
 aov = safe_divide(total_revenue, order_count)
 
-total_ad_spend = float(billing_f["spend"].sum()) if not billing_f.empty else 0.0
-total_ad_revenue = manual_ad_revenue
+total_ad_spend = float(creative_ads_f["spend"].sum()) if not creative_ads_f.empty else 0.0
+total_ad_revenue = float(creative_ads_f["ad_revenue"].sum()) if not creative_ads_f.empty else 0.0
+ad_purchases = float(creative_ads_f["purchases"].sum()) if not creative_ads_f.empty else 0.0
 roas = safe_divide(total_ad_revenue, total_ad_spend)
+
 gross_profit_before_ads = float(lines_f["gross_profit_before_ads"].sum()) if not lines_f.empty else 0.0
 net_profit_after_ads = gross_profit_before_ads - total_ad_spend
 mer = safe_divide(total_revenue, total_ad_spend)
@@ -632,8 +652,12 @@ conversion_rate = safe_divide(order_count, total_sessions) * 100
 # =========================================================
 if show_diagnostic:
     with st.expander("📁 File diagnostic / dosya tanıma", expanded=False):
-        st.write(f"Okunan klasör: `{DATA_DIR}`")
+        st.write(f"Shopify klasörü: `{DATA_DIR}`")
+        st.write(f"Kreatif reklam klasörü: `{KREATIF_DIR}`")
+        st.markdown("### Shopify dosyaları")
         st.dataframe(scan, use_container_width=True, hide_index=True)
+        st.markdown("### Kreatif reklam dosyaları")
+        st.dataframe(creative_debug, use_container_width=True, hide_index=True)
         if issues:
             st.markdown("#### Uyarılar")
             for issue in issues:
@@ -661,15 +685,11 @@ r3c4.metric("Tracked Inventory Items", f"{tracked_inventory_items:,}")
 
 r4c1, r4c2, r4c3, r4c4 = st.columns(4)
 r4c1.metric("Low Stock Items", f"{low_stock_items:,}")
-r4c2.metric("Sessions", f"{total_sessions:,.0f}")
-r4c3.metric("Visitors", f"{total_visitors:,.0f}")
+r4c2.metric("Ad Purchases", f"{ad_purchases:,.0f}")
+r4c3.metric("Sessions", f"{total_sessions:,.0f}")
 r4c4.metric("Conversion Rate", f"{conversion_rate:.2f}%")
 
-if total_ad_revenue == 0 and total_ad_spend > 0:
-    st.warning(
-        "Total Ad Revenue dosyadan gelmiyor çünkü yüklediğin Meta dosyası fatura özeti. "
-        "ROAS için ya Meta campaign/performance dosyası yükle ya da soldaki Manual Total Ad Revenue alanına reklam cirosunu gir."
-    )
+st.info("Bu Shopify sürümünde Meta/fatura dosyası kullanılmaz. Total Ad Spend ve Total Ad Revenue, Kreatif_Takip klasöründeki kreatif raporlarından alınır.")
 
 
 # =========================================================
@@ -679,14 +699,17 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📁 File Diagnostic",
     "📊 Sales",
     "📦 Products & Cost",
-    "📣 Meta Billing",
+    "🎨 Creative Ads",
     "🧭 Sessions",
     "🧪 Data Quality",
 ])
 
 with tab1:
     st.subheader("File Diagnostic")
+    st.write("Shopify klasöründeki dosyalar:")
     st.dataframe(scan, use_container_width=True, hide_index=True)
+    st.write("Kreatif_Takip klasöründeki reklam raporları:")
+    st.dataframe(creative_debug, use_container_width=True, hide_index=True)
     st.subheader("Order parser debug")
     st.dataframe(order_debug, use_container_width=True, hide_index=True)
 
@@ -733,14 +756,52 @@ with tab3:
             st.dataframe(unmatched, use_container_width=True, hide_index=True)
 
 with tab4:
-    st.subheader("Meta Billing")
-    if billing_f.empty:
-        st.warning("Fatura/billing verisi yok.")
+    st.subheader("Creative Ads / Reklam Harcaması")
+    if creative_ads_f.empty:
+        st.warning("Kreatif reklam verisi yok. Kreatif_Takip klasörüne günlük kreatif CSV raporu yükle.")
     else:
-        daily_spend = billing_f.groupby(billing_f["date"].dt.normalize(), as_index=False).agg(spend=("spend", "sum")).rename(columns={"date": "date"})
-        fig = px.line(daily_spend, x="date", y="spend", markers=True, title="Daily Meta Billing Spend")
+        daily_ads = creative_ads_f.groupby(creative_ads_f["date"].dt.normalize(), as_index=False).agg(
+            spend=("spend", "sum"),
+            ad_revenue=("ad_revenue", "sum"),
+            purchases=("purchases", "sum"),
+            reach=("reach", "sum"),
+            impressions=("impressions", "sum"),
+        ).rename(columns={"date": "date"})
+        daily_ads["roas"] = daily_ads.apply(lambda r: safe_divide(r["ad_revenue"], r["spend"]), axis=1)
+
+        fig = px.line(daily_ads, x="date", y=["spend", "ad_revenue"], markers=True, title="Daily Creative Spend & Ad Revenue")
         st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(billing_f.sort_values("date", ascending=False), use_container_width=True, hide_index=True)
+        st.dataframe(daily_ads.sort_values("date", ascending=False), use_container_width=True, hide_index=True)
+
+        st.subheader("Campaign / Creative Summary")
+        creative_summary = creative_ads_f.groupby(["campaign_name", "creative_name"], as_index=False).agg(
+            spend=("spend", "sum"),
+            ad_revenue=("ad_revenue", "sum"),
+            purchases=("purchases", "sum"),
+            reach=("reach", "sum"),
+            impressions=("impressions", "sum"),
+            ctr=("ctr", "mean"),
+            cpc=("cpc", "mean"),
+            cpm=("cpm", "mean"),
+            frequency=("frequency", "mean"),
+        )
+        creative_summary["roas"] = creative_summary.apply(lambda r: safe_divide(r["ad_revenue"], r["spend"]), axis=1)
+        st.dataframe(
+            creative_summary.sort_values("spend", ascending=False).style.format({
+                "spend": "{:,.2f} TL",
+                "ad_revenue": "{:,.2f} TL",
+                "purchases": "{:,.0f}",
+                "reach": "{:,.0f}",
+                "impressions": "{:,.0f}",
+                "ctr": "{:.2f}",
+                "cpc": "{:,.2f}",
+                "cpm": "{:,.2f}",
+                "frequency": "{:.2f}",
+                "roas": "{:.2f}",
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
 
 with tab5:
     st.subheader("Sessions")
@@ -758,11 +819,11 @@ with tab5:
 with tab6:
     st.subheader("Data Quality")
     quality = pd.DataFrame([
-        {"Check": "CSV files found", "Value": len(scan)},
+        {"Check": "Shopify CSV files found", "Value": len(scan)},
         {"Check": "Order rows", "Value": len(orders)},
         {"Check": "Line rows", "Value": len(lines)},
         {"Check": "Cost rows", "Value": len(costs)},
-        {"Check": "Billing rows", "Value": len(billing)},
+        {"Check": "Creative ad rows", "Value": len(creative_ads)},
         {"Check": "Sessions rows", "Value": len(sessions)},
         {"Check": "Cost match rate", "Value": f"{cost_match_rate:.1%}"},
     ])
