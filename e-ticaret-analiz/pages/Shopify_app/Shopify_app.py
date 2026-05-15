@@ -489,40 +489,202 @@ def load_gross_monthly() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def load_meta() -> pd.DataFrame:
-    groups = classify_files()
-    files = groups["meta"] + groups["billing"]
-    rows = []
+    """
+    Meta Spend'i çift saymamak için yeni mantık:
 
-    for path in files:
+    1) meta_billing / fatura dosyası varsa:
+       - Gerçek Meta Spend sadece billing/fatura dosyasından alınır.
+       - meta_campaigns dosyası sadece campaign, revenue, purchase ve ROAS analizi için kullanılır.
+       - campaign dosyasındaki spend, campaign_spend_original kolonunda saklanır ama ana spend'e eklenmez.
+
+    2) Billing/fatura dosyası yoksa:
+       - Meta Spend campaign/performance dosyasındaki spend'den alınır.
+    """
+    groups = classify_files()
+
+    billing_files = groups["billing"]
+    campaign_files = groups["meta"]
+
+    billing_rows = []
+    campaign_rows = []
+
+    # =========================
+    # 1. BILLING / FATURA DOSYASI
+    # =========================
+    for path in billing_files:
         df = read_csv_flexible(path)
         if df.empty:
             continue
 
-        date_col = find_col(df, ["Date", "Day", "Tarih", "Reporting starts", "Rapor Başlangıcı", "Rapor Baslangici"])
-        campaign_col = find_col(df, ["Campaign name", "Kampanya Adı", "Kampanya"])
-        spend_col = find_col(df, ["Amount spent", "Harcanan Tutar", "Spend", "Harcama", "Tutar"])
-        revenue_col = find_col(df, ["Purchase conversion value", "Purchases conversion value", "Revenue", "Gelir", "Dönüşüm değeri"])
-        purchase_col = find_col(df, ["Purchases", "Satın almalar", "Alışverişler", "Results"])
+        date_col = find_col(df, [
+            "Date", "Day", "Tarih", "Fatura Tarihi",
+            "Billing date", "Transaction date", "İşlem Tarihi", "Islem Tarihi"
+        ])
+        spend_col = find_col(df, [
+            "Amount", "Tutar", "Harcanan Tutar", "Spend", "Harcama",
+            "Total", "Toplam", "Ücret", "Ucret", "Paid", "Payment"
+        ])
+        desc_col = find_col(df, [
+            "Description", "Açıklama", "Aciklama", "Campaign", "Kampanya",
+            "Type", "İşlem Türü", "Islem Turu"
+        ])
+
+        # Bazı Meta fatura dosyalarında harcama kolonu farklı isimle gelebilir.
+        # Kolon bulunamazsa toplamı pozitif olan en güçlü sayısal kolonu seç.
+        if not spend_col:
+            possible_numeric_cols = []
+            for col in df.columns:
+                vals = df[col].apply(to_float)
+                total = vals.sum()
+                if total > 0:
+                    possible_numeric_cols.append((total, col))
+            if possible_numeric_cols:
+                possible_numeric_cols = sorted(possible_numeric_cols, reverse=True)
+                spend_col = possible_numeric_cols[0][1]
 
         if not spend_col:
             continue
 
         tmp = pd.DataFrame({
             "date": pd.to_datetime(df[date_col], errors="coerce") if date_col else pd.NaT,
-            "campaign_name": df[campaign_col].astype(str) if campaign_col else path.stem,
+            "campaign_name": df[desc_col].astype(str) if desc_col else "Meta Billing",
             "spend": df[spend_col].apply(to_float),
-            "attributed_revenue": df[revenue_col].apply(to_float) if revenue_col else 0.0,
-            "purchases": df[purchase_col].apply(to_float) if purchase_col else 0.0,
+            "attributed_revenue": 0.0,
+            "purchases": 0.0,
             "source_file": path.name,
+            "source_type": "billing",
+            "campaign_spend_original": 0.0,
         })
-        rows.append(tmp)
 
-    if not rows:
-        return pd.DataFrame(columns=["date", "campaign_name", "spend", "attributed_revenue", "purchases", "source_file"])
+        # Eksi veya sıfır ödeme satırlarını ana spend'den çıkar.
+        tmp = tmp[tmp["spend"] > 0].copy()
+        billing_rows.append(tmp)
 
-    out = pd.concat(rows, ignore_index=True)
-    out["date"] = pd.to_datetime(out["date"], errors="coerce")
-    return out
+    billing_df = pd.concat(billing_rows, ignore_index=True) if billing_rows else pd.DataFrame()
+
+    # =========================
+    # 2. CAMPAIGN / PERFORMANCE DOSYASI
+    # =========================
+    for path in campaign_files:
+        df = read_csv_flexible(path)
+        if df.empty:
+            continue
+
+        date_col = find_col(df, [
+            "Date", "Day", "Tarih",
+            "Reporting starts", "Reporting start",
+            "Rapor Başlangıcı", "Rapor Baslangici"
+        ])
+        campaign_col = find_col(df, [
+            "Campaign name", "Campaign", "Kampanya Adı", "Kampanya Adi", "Kampanya"
+        ])
+        spend_col = find_col(df, [
+            "Amount spent", "Amount spent (TRY)", "Harcanan Tutar",
+            "Harcanan Tutar (TRY)", "Spend", "Harcama", "Tutar"
+        ])
+        revenue_col = find_col(df, [
+            "Website purchases conversion value",
+            "Purchase conversion value",
+            "Purchases conversion value",
+            "Website purchase conversion value",
+            "Revenue", "Gelir", "Dönüşüm değeri", "Donusum degeri",
+            "Alışveriş dönüşüm değeri", "Alisveris donusum degeri"
+        ])
+        purchase_col = find_col(df, [
+            "Purchases", "Website purchases", "Satın almalar", "Satin almalar",
+            "Alışverişler", "Alisverisler", "Results", "Sonuçlar", "Sonuclar"
+        ])
+        roas_col = find_col(df, [
+            "Purchase ROAS", "Website purchase ROAS",
+            "Alışveriş Reklam Harcamasının Getirisi",
+            "Alisveris Reklam Harcamasinin Getirisi",
+            "ROAS"
+        ])
+
+        if not spend_col:
+            continue
+
+        spend_series = df[spend_col].apply(to_float)
+        purchases_series = df[purchase_col].apply(to_float) if purchase_col else pd.Series([0.0] * len(df))
+
+        if revenue_col:
+            revenue_series = df[revenue_col].apply(to_float)
+        elif roas_col:
+            revenue_series = spend_series * df[roas_col].apply(to_float)
+        else:
+            revenue_series = pd.Series([0.0] * len(df))
+
+        tmp = pd.DataFrame({
+            "date": pd.to_datetime(df[date_col], errors="coerce") if date_col else pd.NaT,
+            "campaign_name": df[campaign_col].astype(str) if campaign_col else path.stem,
+            "campaign_spend_original": spend_series,
+            "attributed_revenue": revenue_series,
+            "purchases": purchases_series,
+            "source_file": path.name,
+            "source_type": "campaign",
+        })
+
+        campaign_rows.append(tmp)
+
+    campaign_df = pd.concat(campaign_rows, ignore_index=True) if campaign_rows else pd.DataFrame()
+
+    # =========================
+    # 3. DOUBLE COUNT ÖNLEME
+    # =========================
+    if not billing_df.empty:
+        # Billing varsa gerçek Meta Spend billing'den alınır.
+        # Campaign dosyası spend'e eklenmez, sadece revenue/purchase/ROAS için tutulur.
+        if not campaign_df.empty:
+            campaign_df["spend"] = 0.0
+            campaign_df = campaign_df[[
+                "date",
+                "campaign_name",
+                "spend",
+                "attributed_revenue",
+                "purchases",
+                "source_file",
+                "source_type",
+                "campaign_spend_original",
+            ]]
+
+        final = pd.concat([billing_df, campaign_df], ignore_index=True) if not campaign_df.empty else billing_df.copy()
+
+    else:
+        # Billing yoksa campaign spend kullanılır.
+        if not campaign_df.empty:
+            campaign_df["spend"] = campaign_df["campaign_spend_original"]
+            final = campaign_df[[
+                "date",
+                "campaign_name",
+                "spend",
+                "attributed_revenue",
+                "purchases",
+                "source_file",
+                "source_type",
+                "campaign_spend_original",
+            ]].copy()
+        else:
+            final = pd.DataFrame(columns=[
+                "date",
+                "campaign_name",
+                "spend",
+                "attributed_revenue",
+                "purchases",
+                "source_file",
+                "source_type",
+                "campaign_spend_original",
+            ])
+
+    if final.empty:
+        return final
+
+    final["date"] = pd.to_datetime(final["date"], errors="coerce")
+    final["spend"] = final["spend"].fillna(0.0)
+    final["attributed_revenue"] = final["attributed_revenue"].fillna(0.0)
+    final["purchases"] = final["purchases"].fillna(0.0)
+    final["campaign_spend_original"] = final["campaign_spend_original"].fillna(0.0)
+
+    return final
 
 
 # =========================================================
