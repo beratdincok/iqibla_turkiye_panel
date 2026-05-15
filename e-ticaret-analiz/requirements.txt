@@ -6,3 +6,4 @@ numpy
 xlsxwriter
 Pillow
 google-genai
+tabulate
