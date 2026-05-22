@@ -1,0 +1,380 @@
+
+from __future__ import annotations
+
+import csv
+import re
+import unicodedata
+from pathlib import Path
+from typing import Optional, Tuple
+
+import pandas as pd
+
+
+def normalize_text(value) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    s = str(value).lower().strip()
+    tr_map = str.maketrans({
+        "ı": "i", "İ": "i", "ş": "s", "Ş": "s", "ğ": "g", "Ğ": "g",
+        "ç": "c", "Ç": "c", "ö": "o", "Ö": "o", "ü": "u", "Ü": "u",
+    })
+    s = s.translate(tr_map)
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def to_float(value) -> float:
+    if value is None or pd.isna(value) or value == "":
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = str(value).strip()
+    s = (
+        s.replace("TL", "")
+        .replace("TRY", "")
+        .replace("₺", "")
+        .replace("%", "")
+        .replace('"', "")
+        .replace("\xa0", "")
+        .replace(" ", "")
+    )
+    if s.lower() in {"-", "nan", "none", "null", "n/a", "henüzfaturakesilmemiştir.", "henüz fatura kesilmemiştir."}:
+        return 0.0
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    elif "." in s:
+        parts = s.split(".")
+        if len(parts) > 1 and all(p.isdigit() for p in parts):
+            if all(len(p) == 3 for p in parts[1:]):
+                s = "".join(parts)
+    try:
+        return float(s)
+    except Exception:
+        cleaned = re.sub(r"[^0-9.\-]", "", s)
+        try:
+            return float(cleaned)
+        except Exception:
+            return 0.0
+
+
+def money(value: float) -> str:
+    return f"{float(value):,.2f} TL"
+
+
+def safe_divide(a: float, b: float) -> float:
+    return float(a) / float(b) if b else 0.0
+
+
+def clean_sku(value) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    s = str(value).strip().replace(" ", "").replace("'", "")
+    if s.startswith("6-"):
+        s = s[2:]
+    s = s.replace("-", "")
+    if re.fullmatch(r"\d+\.0", s):
+        s = s[:-2]
+    try:
+        if "e+" in s.lower():
+            s = str(int(float(s)))
+    except Exception:
+        pass
+    return s
+
+
+def find_col(df: pd.DataFrame, candidates: list[str]) -> Optional[str]:
+    norm_map = {normalize_text(c): c for c in df.columns}
+    for cand in candidates:
+        target = normalize_text(cand)
+        for norm, raw in norm_map.items():
+            if target == norm:
+                return raw
+    for cand in candidates:
+        target = normalize_text(cand)
+        for norm, raw in norm_map.items():
+            if target and target in norm:
+                return raw
+    return None
+
+
+def read_csv_flexible(path: Path, skiprows: int = 0) -> tuple[pd.DataFrame, str, str]:
+    encodings = ["utf-8-sig", "utf-8", "cp1254", "iso-8859-9", "latin1"]
+    seps = [",", ";", "\t"]
+    for enc in encodings:
+        for sep in seps:
+            try:
+                df = pd.read_csv(path, encoding=enc, sep=sep, dtype=str, low_memory=False, skiprows=skiprows)
+                if df.shape[1] > 1:
+                    return df, enc, sep
+            except Exception:
+                pass
+    return pd.DataFrame(), "", ""
+
+
+def read_table_flexible(path: Path, skiprows: int = 0) -> tuple[pd.DataFrame, str, str]:
+    if path.suffix.lower() in [".xlsx", ".xls"]:
+        for sr in [skiprows, 1, 0, 2, 3]:
+            try:
+                df = pd.read_excel(path, dtype=str, skiprows=sr)
+                # If first row contains real headers because export disclaimer was row 1
+                if df.shape[1] > 1:
+                    # If columns are Unnamed and first row looks like header, promote it.
+                    unnamed_ratio = sum(str(c).startswith("Unnamed") for c in df.columns) / max(len(df.columns), 1)
+                    if unnamed_ratio > 0.5 and len(df) > 0:
+                        new_header = df.iloc[0].astype(str).tolist()
+                        if any("Sipariş" in x or "Barkod" in x or "SKU" in x for x in new_header):
+                            df = df.iloc[1:].copy()
+                            df.columns = new_header
+                    return df, "excel", f"skiprows={sr}"
+            except Exception:
+                pass
+        return pd.DataFrame(), "", ""
+    return read_csv_flexible(path, skiprows=skiprows)
+
+
+def read_shopify_orders(path: Path) -> tuple[pd.DataFrame, str, str]:
+    df, enc, sep = read_csv_flexible(path)
+    if not df.empty and {"Name", "Created at", "Lineitem name"}.issubset(set(df.columns)):
+        return df, enc, sep
+
+    encodings = ["utf-8-sig", "utf-8", "cp1254", "iso-8859-9", "latin1"]
+    for enc in encodings:
+        try:
+            with open(path, "r", encoding=enc, errors="replace", newline="") as f:
+                rows = list(csv.reader(f))
+            if not rows:
+                continue
+            header = rows[0]
+            if len(header) == 1 and "," in header[0]:
+                header = next(csv.reader([header[0]]))
+            hlen = len(header)
+            fixed = []
+            for row in rows[1:]:
+                if len(row) == 1 and "," in row[0]:
+                    row = next(csv.reader([row[0]]))
+                if len(row) < hlen:
+                    row += [""] * (hlen - len(row))
+                elif len(row) > hlen:
+                    row = row[:hlen]
+                fixed.append(row)
+            out = pd.DataFrame(fixed, columns=header)
+            if {"Name", "Created at", "Lineitem name"}.issubset(set(out.columns)):
+                return out, enc, "robust-csv"
+        except Exception:
+            continue
+    return pd.DataFrame(), "", ""
+
+
+def read_meta_billing(path: Path) -> tuple[pd.DataFrame, str]:
+    # Meta invoice has intro text; transaction section starts with Tarih / Tutar.
+    try:
+        lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+        header_idx = None
+        for i, line in enumerate(lines):
+            n = normalize_text(line)
+            if "tarih" in n and "tutar" in n and ("para birimi" in n or "odeme" in n or "islem" in n):
+                header_idx = i
+                break
+        if header_idx is not None:
+            section = []
+            for line in lines[header_idx:]:
+                if not line.strip() and len(section) > 1:
+                    break
+                if line.strip():
+                    section.append(line)
+            rows = list(csv.reader(section))
+            if len(rows) >= 2:
+                return pd.DataFrame(rows[1:], columns=rows[0]), "meta-billing-section"
+    except Exception:
+        pass
+    df, _, _ = read_csv_flexible(path)
+    return df, "standard"
+
+
+def load_cost_table(folder: Path) -> pd.DataFrame:
+    files = [p for p in folder.glob("*") if p.suffix.lower() in [".csv", ".xlsx", ".xls"] and any(x in normalize_text(p.name) for x in ["maliyet", "cost"])]
+    if not files:
+        return pd.DataFrame(columns=["sku_key", "unit_cost", "commission_rate", "unit_shipping", "vat_rate", "source_file"])
+    frames = []
+    for p in files:
+        df, _, _ = read_table_flexible(p)
+        if df.empty:
+            continue
+        sku = find_col(df, ["SKU", "Barkod", "Barcode", "Stok Kodu"])
+        cost = find_col(df, ["Maliyet", "Maliyet Alış", "Maliyet (Al??)", "Cost"])
+        comm = find_col(df, ["Komisyon oran", "Komisyon", "Commission"])
+        ship = find_col(df, ["Kargo", "Shipping"])
+        vat = find_col(df, ["KDV Oranı", "KDV Oran", "KDV", "VAT"])
+        if not sku:
+            continue
+        out = pd.DataFrame({
+            "sku_key": df[sku].apply(clean_sku),
+            "unit_cost": df[cost].apply(to_float) if cost else 0.0,
+            "commission_rate": df[comm].apply(to_float) if comm else 0.0,
+            "unit_shipping": df[ship].apply(to_float) if ship else 0.0,
+            "vat_rate": df[vat].apply(to_float) if vat else 0.0,
+            "source_file": p.name,
+        })
+        out["commission_rate"] = out["commission_rate"].apply(lambda x: x / 100 if x > 1 else x)
+        frames.append(out)
+    if not frames:
+        return pd.DataFrame(columns=["sku_key", "unit_cost", "commission_rate", "unit_shipping", "vat_rate", "source_file"])
+    res = pd.concat(frames, ignore_index=True)
+    res = res[res["sku_key"] != ""].drop_duplicates("sku_key", keep="last")
+    return res
+
+
+def ensure_manual_file(project_dir: Path) -> Path:
+    data_dir = project_dir / "data"
+    data_dir.mkdir(exist_ok=True)
+    path = data_dir / "manual_entries.csv"
+    if not path.exists():
+        pd.DataFrame(columns=[
+            "date", "platform", "store_name", "product_name", "units_sold",
+            "order_count", "total_revenue", "ad_spend", "notes"
+        ]).to_csv(path, index=False, encoding="utf-8-sig")
+    return path
+
+
+def load_manual_entries(project_dir: Path, platform: Optional[str] = None) -> pd.DataFrame:
+    path = ensure_manual_file(project_dir)
+    try:
+        df = pd.read_csv(path, dtype=str)
+    except Exception:
+        df = pd.DataFrame(columns=[
+            "date", "platform", "store_name", "product_name", "units_sold",
+            "order_count", "total_revenue", "ad_spend", "notes"
+        ])
+    for col in ["units_sold", "order_count", "total_revenue", "ad_spend"]:
+        if col in df.columns:
+            df[col] = df[col].apply(to_float)
+        else:
+            df[col] = 0.0
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date.astype(str)
+    if platform:
+        df = df[df["platform"].astype(str).str.lower() == platform.lower()].copy()
+    return df
+
+
+def append_manual_entry(project_dir: Path, row: dict) -> None:
+    path = ensure_manual_file(project_dir)
+    df = load_manual_entries(project_dir)
+    df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+    df.to_csv(path, index=False, encoding="utf-8-sig")
+
+
+def manual_input_ui(st, project_dir: Path, platform: str):
+    st.subheader("Manuel Günlük Giriş")
+    with st.form(f"manual_form_{platform}"):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            date = st.date_input("Tarih")
+            store_name = st.text_input("Mağaza / Kanal", value=platform)
+            product_name = st.text_input("Ürün adı", value="")
+        with c2:
+            units_sold = st.number_input("Satılan ürün adedi", min_value=0, value=0, step=1)
+            order_count = st.number_input("Sipariş adedi", min_value=0, value=0, step=1)
+            total_revenue = st.number_input("Net ciro / Total Revenue", min_value=0.0, value=0.0, step=100.0)
+        with c3:
+            ad_spend = st.number_input("Reklam harcaması", min_value=0.0, value=0.0, step=100.0)
+            notes = st.text_area("Not", value="")
+        submitted = st.form_submit_button("Manuel veriyi ekle")
+        if submitted:
+            append_manual_entry(project_dir, {
+                "date": str(date),
+                "platform": platform,
+                "store_name": store_name,
+                "product_name": product_name,
+                "units_sold": units_sold,
+                "order_count": order_count,
+                "total_revenue": total_revenue,
+                "ad_spend": ad_spend,
+                "notes": notes,
+            })
+            st.success("Manuel veri eklendi. Hesaplamalara dahil edildi.")
+            st.rerun()
+
+
+def save_panel_summary(folder: Path, metrics: dict) -> None:
+    rows = []
+    for k, v in metrics.items():
+        try:
+            v = float(v)
+        except Exception:
+            pass
+        rows.append({"metric": k, "value": v})
+    pd.DataFrame(rows).to_csv(folder / "panel_summary.csv", index=False, encoding="utf-8-sig")
+
+
+def load_panel_summary(folder: Path, platform_name: str) -> tuple[pd.DataFrame, dict]:
+    path = folder / "panel_summary.csv"
+    info = {"platform": platform_name, "path": str(path), "exists": path.exists(), "status": "NOT_FOUND", "metrics": 0, "notes": ""}
+    if not path.exists():
+        info["notes"] = "panel_summary.csv yok"
+        return pd.DataFrame(columns=["metric", "value", "value_num", "platform"]), info
+    df, enc, sep = read_csv_flexible(path)
+    if df.empty:
+        info["status"] = "ERROR"
+        info["notes"] = "okunamadı"
+        return pd.DataFrame(columns=["metric", "value", "value_num", "platform"]), info
+    metric = find_col(df, ["metric", "metrik", "kpi", "name"])
+    value = find_col(df, ["value", "deger", "değer", "amount"])
+    if metric and value:
+        out = pd.DataFrame({"metric": df[metric].apply(normalize_text), "value": df[value], "platform": platform_name})
+    else:
+        out = pd.DataFrame([{"metric": normalize_text(c), "value": df[c].iloc[0] if len(df) else 0, "platform": platform_name} for c in df.columns])
+    out["value_num"] = out["value"].apply(to_float)
+    info["status"] = "OK"
+    info["metrics"] = len(out)
+    info["notes"] = f"encoding={enc}, sep={sep}"
+    return out, info
+
+
+def summary_value(summary: pd.DataFrame, aliases: list[str], default: float = 0.0) -> float:
+    if summary is None or summary.empty:
+        return default
+    wanted = [normalize_text(a) for a in aliases]
+    for _, row in summary.iterrows():
+        m = normalize_text(row.get("metric", ""))
+        if m in wanted:
+            return to_float(row.get("value_num", row.get("value", default)))
+    for _, row in summary.iterrows():
+        m = normalize_text(row.get("metric", ""))
+        if any(w and w in m for w in wanted):
+            return to_float(row.get("value_num", row.get("value", default)))
+    return default
+
+
+def kpi_block(st, metrics: dict):
+    rows = [
+        ("Total Revenue", metrics.get("total_revenue", 0)),
+        ("Order Count", metrics.get("order_count", 0)),
+        ("Units Sold", metrics.get("units_sold", 0)),
+        ("AOV", metrics.get("aov", 0)),
+        ("Gross Profit Before Ads", metrics.get("gross_profit_before_ads", 0)),
+        ("Total Ad Spend", metrics.get("total_ad_spend", 0)),
+        ("Total Ad Revenue", metrics.get("total_ad_revenue", 0)),
+        ("ROAS", metrics.get("roas", 0)),
+        ("Net Profit After Ads", metrics.get("net_profit_after_ads", 0)),
+        ("MER", metrics.get("mer", 0)),
+        ("Cost Match Rate", metrics.get("cost_match_rate", 0)),
+    ]
+    for i in range(0, len(rows), 4):
+        cols = st.columns(4)
+        for col, (label, val) in zip(cols, rows[i:i+4]):
+            if label in ["Order Count", "Units Sold"]:
+                col.metric(label, f"{val:,.0f}")
+            elif label in ["ROAS", "MER"]:
+                col.metric(label, f"{val:.2f}" if val else "N/A")
+            elif label == "Cost Match Rate":
+                col.metric(label, f"{val:.1%}" if val else "0.0%")
+            else:
+                col.metric(label, money(val))
