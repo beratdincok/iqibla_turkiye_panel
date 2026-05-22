@@ -1,0 +1,9 @@
+streamlit
+pandas
+plotly
+openpyxl
+xlsxwriter
+numpy
+Pillow
+google-genai
+tabulate
