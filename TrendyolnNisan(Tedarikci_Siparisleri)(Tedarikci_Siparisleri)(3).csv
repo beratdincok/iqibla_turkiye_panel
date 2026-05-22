@@ -1,0 +1,185 @@
+
+from pathlib import Path
+import sys
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+
+BASE_DIR = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(BASE_DIR))
+from common.analytics import *
+
+APP_DIR = Path(__file__).resolve().parent
+PLATFORM = "Shopify"
+
+st.title("🟣 Shopify Paneli")
+st.caption("Shopify sipariş + maliyet + Meta fatura + manuel günlük giriş. Shopify Ad Revenue kullanılmaz; sadece Ad Spend alınır.")
+
+manual_input_ui(st, BASE_DIR, PLATFORM)
+
+@st.cache_data(show_spinner=False)
+def load_shopify_data():
+    debug = []
+    order_frames = []
+    for p in sorted(APP_DIR.glob("*")):
+        if p.suffix.lower() not in [".csv", ".xlsx", ".xls"]:
+            continue
+        n = normalize_text(p.name)
+        if any(x in n for x in ["maliyet", "fatura", "billing", "zamana gore", "oturum", "meta"]):
+            continue
+        df, enc, sep = read_shopify_orders(p)
+        if not df.empty:
+            df["source_file"] = p.name
+            order_frames.append(df)
+            debug.append({"file": p.name, "type": "orders", "status": "OK", "rows": len(df), "encoding": enc, "sep": sep})
+    orders_raw = pd.concat(order_frames, ignore_index=True) if order_frames else pd.DataFrame()
+
+    costs = load_cost_table(APP_DIR)
+
+    meta_spend_rows = []
+    for p in sorted(APP_DIR.glob("*")):
+        n = normalize_text(p.name)
+        if p.suffix.lower() == ".csv" and ("fatura" in n or "billing" in n or "meta" in n):
+            df, mode = read_meta_billing(p)
+            if df.empty:
+                debug.append({"file": p.name, "type": "meta_billing", "status": "ERROR", "rows": 0, "encoding": mode, "sep": ""})
+                continue
+            amount = find_col(df, ["Tutar", "Amount", "Total", "Harcama", "Spend"])
+            date = find_col(df, ["Tarih", "Date"])
+            if amount:
+                tmp = pd.DataFrame({
+                    "date": pd.to_datetime(df[date], errors="coerce", dayfirst=True) if date else pd.NaT,
+                    "ad_spend": df[amount].apply(to_float),
+                    "source_file": p.name
+                })
+                tmp = tmp[tmp["ad_spend"] > 0].copy()
+                meta_spend_rows.append(tmp)
+                debug.append({"file": p.name, "type": "meta_billing", "status": "OK", "rows": len(tmp), "encoding": mode, "sep": ""})
+
+    meta_spend = pd.concat(meta_spend_rows, ignore_index=True) if meta_spend_rows else pd.DataFrame(columns=["date", "ad_spend", "source_file"])
+    return orders_raw, costs, meta_spend, pd.DataFrame(debug)
+
+orders_raw, costs, meta_spend, debug = load_shopify_data()
+
+manual = load_manual_entries(BASE_DIR, PLATFORM)
+
+# Build orders and lines
+if not orders_raw.empty:
+    for col in ["Total", "Refunded Amount", "Lineitem quantity", "Lineitem price", "Lineitem discount"]:
+        if col not in orders_raw.columns:
+            orders_raw[col] = 0.0
+        orders_raw[col] = orders_raw[col].apply(to_float)
+    for col in ["Cancelled at", "Financial Status", "Lineitem sku", "Lineitem name", "Created at"]:
+        if col not in orders_raw.columns:
+            orders_raw[col] = ""
+
+    orders_raw["order_name"] = orders_raw["Name"].astype(str)
+    orders_raw["order_date"] = pd.to_datetime(orders_raw["Created at"], errors="coerce", utc=True).dt.tz_localize(None)
+    orders_raw["cancelled_at"] = pd.to_datetime(orders_raw["Cancelled at"], errors="coerce", utc=True).dt.tz_localize(None)
+    orders_raw["financial_status"] = orders_raw["Financial Status"].astype(str).str.lower()
+
+    dedupe_cols = [c for c in ["Name", "Created at", "Lineitem sku", "Lineitem name", "Lineitem quantity", "Lineitem price", "Total"] if c in orders_raw.columns]
+    orders_raw = orders_raw.drop_duplicates(subset=dedupe_cols, keep="first")
+
+    orders = orders_raw.groupby("order_name", as_index=False).agg(
+        order_date=("order_date", "first"),
+        total=("Total", "first"),
+        refunded=("Refunded Amount", "first"),
+        cancelled_at=("cancelled_at", "first"),
+        financial_status=("financial_status", "first"),
+        source_file=("source_file", "first"),
+    )
+    orders["is_cancelled"] = orders["cancelled_at"].notna() | orders["financial_status"].isin(["voided", "cancelled", "canceled"])
+    orders["net_sales"] = orders["total"] - orders["refunded"]
+    orders.loc[orders["is_cancelled"], "net_sales"] = 0.0
+    orders["order_count"] = (~orders["is_cancelled"]).astype(int)
+
+    lines = orders_raw.copy()
+    lines["sku_key"] = lines["Lineitem sku"].apply(clean_sku)
+    lines["product_name"] = lines["Lineitem name"].astype(str)
+    lines["qty"] = lines["Lineitem quantity"].apply(to_float)
+    lines["line_revenue"] = lines["Lineitem price"].apply(to_float) * lines["qty"] - lines["Lineitem discount"].apply(to_float)
+    lines["is_cancelled"] = lines["cancelled_at"].notna() | lines["financial_status"].isin(["voided", "cancelled", "canceled"])
+    lines.loc[lines["is_cancelled"], ["qty", "line_revenue"]] = 0.0
+    lines = lines[["order_name", "order_date", "sku_key", "product_name", "qty", "line_revenue", "source_file"]].copy()
+else:
+    orders = pd.DataFrame()
+    lines = pd.DataFrame()
+
+if not lines.empty:
+    lines = lines.merge(costs, on="sku_key", how="left")
+    for col in ["unit_cost", "unit_shipping", "commission_rate"]:
+        lines[col] = lines[col].fillna(0.0)
+    lines["matched_cost"] = lines["unit_cost"].gt(0)
+    lines["gross_profit"] = lines["line_revenue"] - ((lines["unit_cost"] + lines["unit_shipping"]) * lines["qty"]) - (lines["line_revenue"] * lines["commission_rate"])
+else:
+    lines["gross_profit"] = []
+    lines["matched_cost"] = []
+
+manual_revenue = manual["total_revenue"].sum() if not manual.empty else 0.0
+manual_orders = manual["order_count"].sum() if not manual.empty else 0.0
+manual_units = manual["units_sold"].sum() if not manual.empty else 0.0
+manual_ad_spend = manual["ad_spend"].sum() if not manual.empty else 0.0
+
+total_revenue = (orders["net_sales"].sum() if not orders.empty else 0.0) + manual_revenue
+order_count = (orders["order_count"].sum() if not orders.empty else 0.0) + manual_orders
+units_sold = (lines["qty"].sum() if not lines.empty else 0.0) + manual_units
+aov = safe_divide(total_revenue, order_count)
+gross_profit_before_ads = (lines["gross_profit"].sum() if not lines.empty else 0.0) + manual_revenue  # manual revenue profit unknown; conservative add as gross manual
+total_ad_spend = (meta_spend["ad_spend"].sum() if not meta_spend.empty else 0.0) + manual_ad_spend
+total_ad_revenue = 0.0
+roas = 0.0
+net_profit_after_ads = gross_profit_before_ads - total_ad_spend
+mer = safe_divide(total_revenue, total_ad_spend)
+cost_match_rate = float(lines["matched_cost"].mean()) if not lines.empty and "matched_cost" in lines else 0.0
+
+metrics = {
+    "total_revenue": total_revenue,
+    "order_count": order_count,
+    "units_sold": units_sold,
+    "aov": aov,
+    "gross_profit_before_ads": gross_profit_before_ads,
+    "total_ad_spend": total_ad_spend,
+    "total_ad_revenue": total_ad_revenue,
+    "roas": roas,
+    "net_profit_after_ads": net_profit_after_ads,
+    "mer": mer,
+    "cost_match_rate": cost_match_rate,
+}
+save_panel_summary(APP_DIR, metrics)
+
+st.subheader("Main Report")
+kpi_block(st, metrics)
+st.info("Shopify Total Ad Revenue kullanılmaz ve Yapay Zeka toplamına katılmaz. Shopify reklam harcaması = Meta fatura + manuel ad spend.")
+
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Satış", "📦 Ürün & Kâr", "📣 Meta Harcaması", "✍️ Manuel Girişler", "🧪 Data Quality"])
+
+with tab1:
+    if orders.empty:
+        st.warning("Shopify sipariş dosyası okunamadı.")
+    else:
+        by_file = orders.groupby("source_file", as_index=False).agg(order_count=("order_count", "sum"), total_revenue=("net_sales", "sum"))
+        st.dataframe(by_file, use_container_width=True, hide_index=True)
+        daily = orders.groupby(orders["order_date"].dt.date, as_index=False).agg(total_revenue=("net_sales", "sum"), order_count=("order_count", "sum"))
+        fig = px.line(daily, x="order_date", y="total_revenue", markers=True)
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(orders.sort_values("order_date", ascending=False), use_container_width=True, hide_index=True)
+
+with tab2:
+    if lines.empty:
+        st.info("Ürün satırı yok.")
+    else:
+        product = lines.groupby(["product_name", "sku_key"], as_index=False).agg(units_sold=("qty", "sum"), revenue=("line_revenue", "sum"), gross_profit=("gross_profit", "sum"), matched_cost=("matched_cost", "max"))
+        st.dataframe(product.sort_values("revenue", ascending=False), use_container_width=True, hide_index=True)
+
+with tab3:
+    st.dataframe(meta_spend, use_container_width=True, hide_index=True)
+
+with tab4:
+    st.dataframe(manual, use_container_width=True, hide_index=True)
+
+with tab5:
+    st.write("Okuma debug")
+    st.dataframe(debug, use_container_width=True, hide_index=True)
+    st.write("panel_summary.csv üretildi.")
+    st.dataframe(pd.DataFrame([metrics]), use_container_width=True, hide_index=True)
